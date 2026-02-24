@@ -1,7 +1,7 @@
 import { PartialType } from '@nestjs/swagger';
 import { IsEnum, IsOptional } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { GroupStatus } from '@prisma/client';
+import { GroupStatus } from '../../../entities';
 import { CreateGroupDto } from './create-group.dto';
 
 export class UpdateGroupDto extends PartialType(CreateGroupDto) {

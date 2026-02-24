@@ -4,8 +4,16 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, Role } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Brackets, IsNull, Repository } from 'typeorm';
+import {
+  Group,
+  GroupMembership,
+  User,
+  Role,
+  MembershipRole,
+} from '../../entities';
+import { ERROR_MESSAGES } from '../../common/constants';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
 import { AddMemberDto } from './dto/add-member.dto';
@@ -14,75 +22,87 @@ import { QueryGroupsDto } from './dto/query-groups.dto';
 
 @Injectable()
 export class GroupsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    @InjectRepository(Group)
+    private readonly groupRepository: Repository<Group>,
+    @InjectRepository(GroupMembership)
+    private readonly membershipRepository: Repository<GroupMembership>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+  ) {}
 
   async create(userId: string, dto: CreateGroupDto) {
-    const group = await this.prisma.group.create({
-      data: {
-        name: dto.name,
-        project_name: dto.project_name,
-        description: dto.description,
-        semester: dto.semester,
-        github_repo_url: dto.github_repo_url,
-        jira_project_key: dto.jira_project_key,
-        created_by_id: userId,
-      },
+    const group = this.groupRepository.create({
+      name: dto.name,
+      project_name: dto.project_name,
+      description: dto.description,
+      semester: dto.semester,
+      github_repo_url: dto.github_repo_url,
+      jira_project_key: dto.jira_project_key,
+      created_by_id: userId,
     });
 
-    // Auto-add creator as LEADER
-    await this.prisma.groupMembership.create({
-      data: {
-        group_id: group.id,
-        user_id: userId,
-        role_in_group: 'LEADER',
-      },
-    });
+    const savedGroup = await this.groupRepository.save(group);
 
-    return this.findOneById(group.id);
+    const membership = this.membershipRepository.create({
+      group_id: savedGroup.id,
+      user_id: userId,
+      role_in_group: MembershipRole.LEADER,
+    });
+    await this.membershipRepository.save(membership);
+
+    return this.findOneById(savedGroup.id);
   }
 
   async findAll(userId: string, userRole: Role, query: QueryGroupsDto) {
     const { page = 1, limit = 20, semester, status, search } = query;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.GroupWhereInput = {};
+    const qb = this.groupRepository
+      .createQueryBuilder('group')
+      .loadRelationCountAndMap(
+        'group.members_count',
+        'group.members',
+        'memberCount',
+        (sqb) => sqb.where('memberCount.left_at IS NULL'),
+      );
 
     // Role-based filtering: students only see groups they belong to
     if (userRole === Role.STUDENT || userRole === Role.GROUP_LEADER) {
-      where.members = {
-        some: { user_id: userId, left_at: null },
-      };
+      qb.innerJoin(
+        'group.members',
+        'activeMember',
+        'activeMember.user_id = :userId AND activeMember.left_at IS NULL',
+        { userId },
+      );
     }
-    // LECTURER and ADMIN see all groups
 
-    if (semester) where.semester = semester;
-    if (status) where.status = status;
+    if (semester) {
+      qb.andWhere('group.semester = :semester', { semester });
+    }
+    if (status) {
+      qb.andWhere('group.status = :status', { status });
+    }
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { project_name: { contains: search, mode: 'insensitive' } },
-      ];
+      qb.andWhere(
+        new Brackets((sqb) => {
+          sqb
+            .where('LOWER(group.name) LIKE LOWER(:search)', {
+              search: `%${search}%`,
+            })
+            .orWhere('LOWER(group.project_name) LIKE LOWER(:search)', {
+              search: `%${search}%`,
+            });
+        }),
+      );
     }
 
-    const [groups, total] = await Promise.all([
-      this.prisma.group.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { created_at: 'desc' },
-        include: {
-          _count: {
-            select: {
-              members: { where: { left_at: null } },
-            },
-          },
-        },
-      }),
-      this.prisma.group.count({ where }),
-    ]);
+    qb.orderBy('group.created_at', 'DESC').skip(skip).take(limit);
+
+    const [groups, total] = await qb.getManyAndCount();
 
     return {
-      data: groups.map((group) => ({
+      data: groups.map((group: any) => ({
         id: group.id,
         name: group.name,
         project_name: group.project_name,
@@ -91,7 +111,7 @@ export class GroupsService {
         status: group.status,
         github_repo_url: group.github_repo_url,
         jira_project_key: group.jira_project_key,
-        members_count: group._count.members,
+        members_count: group.members_count ?? 0,
         created_by_id: group.created_by_id,
         created_at: group.created_at,
         updated_at: group.updated_at,
@@ -108,13 +128,12 @@ export class GroupsService {
   async findOne(groupId: string, userId: string, userRole: Role) {
     const group = await this.findOneById(groupId);
 
-    // Students/Leaders can only view groups they belong to
     if (userRole === Role.STUDENT || userRole === Role.GROUP_LEADER) {
       const isMember = group.members.some(
         (m) => m.user_id === userId && m.left_at === null,
       );
       if (!isMember) {
-        throw new ForbiddenException('You are not a member of this group');
+        throw new ForbiddenException(ERROR_MESSAGES.GROUPS.NOT_A_MEMBER);
       }
     }
 
@@ -130,10 +149,7 @@ export class GroupsService {
     await this.assertGroupExists(groupId);
     await this.assertCanManageGroup(groupId, userId, userRole);
 
-    await this.prisma.group.update({
-      where: { id: groupId },
-      data: dto,
-    });
+    await this.groupRepository.update({ id: groupId }, dto);
 
     const group = await this.findOneById(groupId);
     return this.formatGroupDetail(group);
@@ -142,11 +158,8 @@ export class GroupsService {
   async remove(groupId: string) {
     await this.assertGroupExists(groupId);
 
-    // Delete memberships first, then group
-    await this.prisma.groupMembership.deleteMany({
-      where: { group_id: groupId },
-    });
-    await this.prisma.group.delete({ where: { id: groupId } });
+    await this.membershipRepository.delete({ group_id: groupId });
+    await this.groupRepository.delete({ id: groupId });
   }
 
   // ── Member management ──────────────────────────────────
@@ -154,19 +167,10 @@ export class GroupsService {
   async findMembers(groupId: string) {
     await this.assertGroupExists(groupId);
 
-    const memberships = await this.prisma.groupMembership.findMany({
-      where: { group_id: groupId, left_at: null },
-      include: {
-        user: {
-          select: {
-            id: true,
-            full_name: true,
-            email: true,
-            avatar_url: true,
-          },
-        },
-      },
-      orderBy: { joined_at: 'asc' },
+    const memberships = await this.membershipRepository.find({
+      where: { group_id: groupId, left_at: IsNull() },
+      relations: ['user'],
+      order: { joined_at: 'ASC' },
     });
 
     return memberships.map((m) => ({
@@ -188,51 +192,37 @@ export class GroupsService {
     await this.assertGroupExists(groupId);
     await this.assertCanManageGroup(groupId, requesterId, requesterRole);
 
-    // Check if user exists
-    const user = await this.prisma.user.findUnique({
+    const user = await this.userRepository.findOne({
       where: { id: dto.user_id },
     });
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException(ERROR_MESSAGES.GROUPS.USER_NOT_FOUND);
     }
 
-    // Check if already a member (including soft-removed)
-    const existing = await this.prisma.groupMembership.findUnique({
-      where: {
-        group_membership_unique: {
-          group_id: groupId,
-          user_id: dto.user_id,
-        },
-      },
+    const existing = await this.membershipRepository.findOne({
+      where: { group_id: groupId, user_id: dto.user_id },
     });
 
     if (existing && existing.left_at === null) {
-      throw new BadRequestException('User is already a member of this group');
+      throw new BadRequestException(ERROR_MESSAGES.GROUPS.ALREADY_A_MEMBER);
     }
 
     if (existing && existing.left_at !== null) {
-      // Re-add: clear left_at and update role
-      await this.prisma.groupMembership.update({
-        where: {
-          group_membership_unique: {
-            group_id: groupId,
-            user_id: dto.user_id,
-          },
-        },
-        data: {
+      await this.membershipRepository.update(
+        { group_id: groupId, user_id: dto.user_id },
+        {
           left_at: null,
-          role_in_group: dto.role_in_group || 'MEMBER',
+          role_in_group: dto.role_in_group || MembershipRole.MEMBER,
           joined_at: new Date(),
         },
-      });
+      );
     } else {
-      await this.prisma.groupMembership.create({
-        data: {
-          group_id: groupId,
-          user_id: dto.user_id,
-          role_in_group: dto.role_in_group || 'MEMBER',
-        },
+      const membership = this.membershipRepository.create({
+        group_id: groupId,
+        user_id: dto.user_id,
+        role_in_group: dto.role_in_group || MembershipRole.MEMBER,
       });
+      await this.membershipRepository.save(membership);
     }
 
     return this.findMembers(groupId);
@@ -248,28 +238,18 @@ export class GroupsService {
     await this.assertGroupExists(groupId);
     await this.assertCanManageGroup(groupId, requesterId, requesterRole);
 
-    const membership = await this.prisma.groupMembership.findUnique({
-      where: {
-        group_membership_unique: {
-          group_id: groupId,
-          user_id: memberId,
-        },
-      },
+    const membership = await this.membershipRepository.findOne({
+      where: { group_id: groupId, user_id: memberId },
     });
 
     if (!membership || membership.left_at !== null) {
-      throw new NotFoundException('Member not found in this group');
+      throw new NotFoundException(ERROR_MESSAGES.GROUPS.MEMBER_NOT_FOUND);
     }
 
-    await this.prisma.groupMembership.update({
-      where: {
-        group_membership_unique: {
-          group_id: groupId,
-          user_id: memberId,
-        },
-      },
-      data: { role_in_group: dto.role_in_group },
-    });
+    await this.membershipRepository.update(
+      { group_id: groupId, user_id: memberId },
+      { role_in_group: dto.role_in_group },
+    );
 
     return this.findMembers(groupId);
   }
@@ -283,123 +263,87 @@ export class GroupsService {
     await this.assertGroupExists(groupId);
     await this.assertCanManageGroup(groupId, requesterId, requesterRole);
 
-    const membership = await this.prisma.groupMembership.findUnique({
-      where: {
-        group_membership_unique: {
-          group_id: groupId,
-          user_id: memberId,
-        },
-      },
+    const membership = await this.membershipRepository.findOne({
+      where: { group_id: groupId, user_id: memberId },
     });
 
     if (!membership || membership.left_at !== null) {
-      throw new NotFoundException('Member not found in this group');
+      throw new NotFoundException(ERROR_MESSAGES.GROUPS.MEMBER_NOT_FOUND);
     }
 
-    // Prevent removing the last leader
-    if (membership.role_in_group === 'LEADER') {
-      const leaderCount = await this.prisma.groupMembership.count({
+    if (membership.role_in_group === MembershipRole.LEADER) {
+      const leaderCount = await this.membershipRepository.count({
         where: {
           group_id: groupId,
-          role_in_group: 'LEADER',
-          left_at: null,
+          role_in_group: MembershipRole.LEADER,
+          left_at: IsNull(),
         },
       });
       if (leaderCount <= 1) {
         throw new BadRequestException(
-          'Cannot remove the last leader. Assign another leader first.',
+          ERROR_MESSAGES.GROUPS.CANNOT_REMOVE_LAST_LEADER,
         );
       }
     }
 
-    // Soft-remove by setting left_at
-    await this.prisma.groupMembership.update({
-      where: {
-        group_membership_unique: {
-          group_id: groupId,
-          user_id: memberId,
-        },
-      },
-      data: { left_at: new Date() },
-    });
+    await this.membershipRepository.update(
+      { group_id: groupId, user_id: memberId },
+      { left_at: new Date() },
+    );
   }
 
   async leaveGroup(groupId: string, userId: string) {
     await this.assertGroupExists(groupId);
 
-    const membership = await this.prisma.groupMembership.findUnique({
-      where: {
-        group_membership_unique: {
-          group_id: groupId,
-          user_id: userId,
-        },
-      },
+    const membership = await this.membershipRepository.findOne({
+      where: { group_id: groupId, user_id: userId },
     });
 
     if (!membership || membership.left_at !== null) {
-      throw new NotFoundException('You are not a member of this group');
+      throw new NotFoundException(ERROR_MESSAGES.GROUPS.NOT_A_MEMBER);
     }
 
-    // Prevent last leader from leaving
-    if (membership.role_in_group === 'LEADER') {
-      const leaderCount = await this.prisma.groupMembership.count({
+    if (membership.role_in_group === MembershipRole.LEADER) {
+      const leaderCount = await this.membershipRepository.count({
         where: {
           group_id: groupId,
-          role_in_group: 'LEADER',
-          left_at: null,
+          role_in_group: MembershipRole.LEADER,
+          left_at: IsNull(),
         },
       });
       if (leaderCount <= 1) {
         throw new BadRequestException(
-          'You are the last leader. Assign another leader before leaving.',
+          ERROR_MESSAGES.GROUPS.CANNOT_LEAVE_AS_LAST_LEADER,
         );
       }
     }
 
-    await this.prisma.groupMembership.update({
-      where: {
-        group_membership_unique: {
-          group_id: groupId,
-          user_id: userId,
-        },
-      },
-      data: { left_at: new Date() },
-    });
+    await this.membershipRepository.update(
+      { group_id: groupId, user_id: userId },
+      { left_at: new Date() },
+    );
   }
 
   // ── Helpers ────────────────────────────────────────────
 
   private async findOneById(groupId: string) {
-    const group = await this.prisma.group.findUnique({
-      where: { id: groupId },
-      include: {
-        members: {
-          where: { left_at: null },
-          include: {
-            user: {
-              select: {
-                id: true,
-                full_name: true,
-                email: true,
-                avatar_url: true,
-              },
-            },
-          },
-          orderBy: { joined_at: 'asc' },
-        },
-      },
-    });
+    const group = await this.groupRepository
+      .createQueryBuilder('group')
+      .leftJoinAndSelect('group.members', 'member', 'member.left_at IS NULL')
+      .leftJoinAndSelect('member.user', 'user')
+      .where('group.id = :id', { id: groupId })
+      .orderBy('member.joined_at', 'ASC')
+      .getOne();
 
     if (!group) {
-      throw new NotFoundException('Group not found');
+      throw new NotFoundException(ERROR_MESSAGES.GROUPS.NOT_FOUND);
     }
 
     return group;
   }
 
-  private formatGroupDetail(
-    group: Awaited<ReturnType<GroupsService['findOneById']>>,
-  ) {
+  private formatGroupDetail(group: Group) {
+    const members = group.members || [];
     return {
       id: group.id,
       name: group.name,
@@ -409,11 +353,11 @@ export class GroupsService {
       status: group.status,
       github_repo_url: group.github_repo_url,
       jira_project_key: group.jira_project_key,
-      members_count: group.members.length,
+      members_count: members.length,
       created_by_id: group.created_by_id,
       created_at: group.created_at,
       updated_at: group.updated_at,
-      members: group.members.map((m) => ({
+      members: members.map((m) => ({
         id: m.user.id,
         full_name: m.user.full_name,
         email: m.user.email,
@@ -425,11 +369,11 @@ export class GroupsService {
   }
 
   private async assertGroupExists(groupId: string) {
-    const group = await this.prisma.group.findUnique({
+    const group = await this.groupRepository.findOne({
       where: { id: groupId },
     });
     if (!group) {
-      throw new NotFoundException('Group not found');
+      throw new NotFoundException(ERROR_MESSAGES.GROUPS.NOT_FOUND);
     }
     return group;
   }
@@ -439,25 +383,19 @@ export class GroupsService {
     userId: string,
     userRole: Role,
   ) {
-    // Admins can always manage
     if (userRole === Role.ADMIN) return;
 
-    const membership = await this.prisma.groupMembership.findUnique({
-      where: {
-        group_membership_unique: {
-          group_id: groupId,
-          user_id: userId,
-        },
-      },
+    const membership = await this.membershipRepository.findOne({
+      where: { group_id: groupId, user_id: userId },
     });
 
     if (
       !membership ||
       membership.left_at !== null ||
-      membership.role_in_group !== 'LEADER'
+      membership.role_in_group !== MembershipRole.LEADER
     ) {
       throw new ForbiddenException(
-        'Only group leaders can perform this action',
+        ERROR_MESSAGES.GROUPS.ONLY_LEADERS_CAN_MANAGE,
       );
     }
   }

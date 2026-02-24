@@ -1,7 +1,7 @@
 import { IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { GroupStatus } from '@prisma/client';
+import { GroupStatus } from '../../../entities';
 
 export class QueryGroupsDto {
   @ApiPropertyOptional({
