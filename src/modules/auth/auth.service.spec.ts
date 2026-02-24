@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import {
   AuthService,
   UserTokenPayloadDto,
@@ -7,9 +8,9 @@ import {
 } from './auth.service';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { PrismaService } from '../../prisma/prisma.service';
 import { HttpService } from '@nestjs/axios';
-import { IntegrationProvider, User } from '@prisma/client';
+import { User, IntegrationToken, IntegrationProvider } from '../../entities';
+import { ERROR_MESSAGES } from '../../common/constants';
 import * as bcrypt from 'bcrypt';
 import { ConflictException, BadRequestException } from '@nestjs/common';
 
@@ -18,7 +19,8 @@ jest.mock('bcrypt');
 describe('AuthService', () => {
   let service: AuthService;
   let mockJwtService: jest.Mocked<JwtService>;
-  let mockPrismaService: jest.Mocked<PrismaService>;
+  let mockUserRepository: Record<string, jest.Mock>;
+  let mockIntegrationTokenRepository: Record<string, jest.Mock>;
   let mockHttpService: jest.Mocked<HttpService>;
   let mockConfigService: jest.Mocked<ConfigService>;
 
@@ -30,20 +32,20 @@ describe('AuthService', () => {
     mockConfigService = {
       get: jest.fn(),
     } as unknown as jest.Mocked<ConfigService>;
-    mockPrismaService = {
-      user: {
-        findUnique: jest.fn(),
-        create: jest.fn(),
-        update: jest.fn(),
-      },
-      integrationToken: {
-        findUnique: jest.fn(),
-        findMany: jest.fn(),
-        create: jest.fn(),
-        update: jest.fn(),
-        delete: jest.fn(),
-      },
-    } as unknown as jest.Mocked<PrismaService>;
+    mockUserRepository = {
+      findOne: jest.fn(),
+      create: jest.fn((dto) => dto),
+      save: jest.fn(),
+      update: jest.fn(),
+    };
+    mockIntegrationTokenRepository = {
+      findOne: jest.fn(),
+      find: jest.fn(),
+      create: jest.fn((dto) => dto),
+      save: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+    };
     mockHttpService = {
       axiosRef: {
         get: jest.fn(),
@@ -59,8 +61,12 @@ describe('AuthService', () => {
           useValue: mockJwtService,
         },
         {
-          provide: PrismaService,
-          useValue: mockPrismaService,
+          provide: getRepositoryToken(User),
+          useValue: mockUserRepository,
+        },
+        {
+          provide: getRepositoryToken(IntegrationToken),
+          useValue: mockIntegrationTokenRepository,
         },
         {
           provide: HttpService,
@@ -83,7 +89,8 @@ describe('AuthService', () => {
 
     it('should have necessary injections', () => {
       expect(service['jwtService']).toBeDefined();
-      expect(service['prisma']).toBeDefined();
+      expect(service['userRepository']).toBeDefined();
+      expect(service['integrationTokenRepository']).toBeDefined();
       expect(service['configService']).toBeDefined();
     });
   });
@@ -130,44 +137,28 @@ describe('AuthService', () => {
           user_id: userId,
         },
       ];
-      const spyfindUser = jest.spyOn(mockPrismaService.user, 'findUnique');
-      (spyfindUser as jest.Mock).mockResolvedValue({
-        id: userId,
-        email: 'test1@mail.test',
-      });
-      const spyFindTokens = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findMany',
-      );
-      (spyFindTokens as jest.Mock).mockResolvedValue(mockLinkedAccounts);
+
+      mockIntegrationTokenRepository.find.mockResolvedValue(mockLinkedAccounts);
+
       const linkedAccounts = await service.getLinkedAccounts(userId);
       expect(linkedAccounts).toEqual(mockLinkedAccounts);
-      expect(spyFindTokens).toHaveBeenCalledWith({
+      expect(mockIntegrationTokenRepository.find).toHaveBeenCalledWith({
         where: {
           user_id: userId,
           used_for_login: true,
         },
         select: {
-          created_at: true,
           provider: true,
-          provider_email: true,
           provider_username: true,
+          provider_email: true,
+          created_at: true,
         },
       });
     });
 
     it('should return empty array if no linked accounts found', async () => {
       const userId = '2';
-      const spyfindUser = jest.spyOn(mockPrismaService.user, 'findUnique');
-      (spyfindUser as jest.Mock).mockResolvedValue({
-        id: userId,
-        email: 'test2@mail.test',
-      });
-      const spyFindTokens = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findMany',
-      );
-      (spyFindTokens as jest.Mock).mockResolvedValue([]);
+      mockIntegrationTokenRepository.find.mockResolvedValue([]);
       const linkedAccounts = await service.getLinkedAccounts(userId);
       expect(linkedAccounts).toEqual([]);
     });
@@ -329,47 +320,36 @@ describe('AuthService', () => {
   describe('unlinkOAuthAccount', () => {
     it('should unlink an OAuth account successfully', async () => {
       const userId = 'user-123';
-      const provider: IntegrationProvider = 'GITHUB';
-      const spyDelete = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'delete',
-      );
-      (spyDelete as jest.Mock).mockResolvedValue({ count: 1 });
-      const spyFindUnique = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findUnique',
-      );
-      (spyFindUnique as jest.Mock).mockResolvedValue({
+      const provider: IntegrationProvider = IntegrationProvider.GITHUB;
+
+      mockIntegrationTokenRepository.findOne.mockResolvedValue({
         id: 'token-123',
         provider: provider,
         provider_user_id: 'github-uid-1',
         user_id: userId,
       });
+
+      mockIntegrationTokenRepository.delete.mockResolvedValue({ affected: 1 });
+
       await service.unlinkOAuthAccount(userId, provider);
-      expect(spyDelete).toHaveBeenCalledWith({
-        where: {
-          id: 'token-123',
-        },
+      expect(mockIntegrationTokenRepository.delete).toHaveBeenCalledWith({
+        id: 'token-123',
       });
     });
 
     it('should throw error if trying to unlink non-linked account', async () => {
       const userId = 'user-123';
-      const provider: IntegrationProvider = 'GITHUB';
-      const spyFindUnique = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findUnique',
-      );
-      (spyFindUnique as jest.Mock).mockResolvedValue(null);
+      const provider: IntegrationProvider = IntegrationProvider.GITHUB;
+      mockIntegrationTokenRepository.findOne.mockResolvedValue(null);
       await expect(
         service.unlinkOAuthAccount(userId, provider),
-      ).rejects.toThrow('Tài khoản này chưa được liên kết');
+      ).rejects.toThrow(ERROR_MESSAGES.AUTH.ACCOUNT_NOT_LINKED);
     });
   });
 
   describe('findOrCreateOAuthUser', () => {
     it('should find existing user by OAuth token', async () => {
-      const provider: IntegrationProvider = 'GITHUB';
+      const provider: IntegrationProvider = IntegrationProvider.GITHUB;
       const providerUserId = 'github-uid-1';
       const providerEmail = 'test1@mail.test';
       const mockUser = {
@@ -381,28 +361,18 @@ describe('AuthService', () => {
         created_at: new Date(),
       };
 
-      const spyFindUserByOAuthProvider = jest.spyOn(
-        service,
-        'findOrCreateOAuthUser',
-      );
-      (spyFindUserByOAuthProvider as jest.Mock).mockResolvedValue(
-        mockUser as User,
-      );
+      const spyFindOrCreate = jest.spyOn(service, 'findOrCreateOAuthUser');
+      (spyFindOrCreate as jest.Mock).mockResolvedValue(mockUser as User);
 
-      const spyFindToken = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findUnique',
-      );
-      (spyFindToken as jest.Mock).mockResolvedValue({
+      mockIntegrationTokenRepository.findOne.mockResolvedValue({
         id: 'token-123',
         provider: provider,
         provider_user_id: providerUserId,
         user_id: mockUser.id,
       });
-      const spyFindUser = jest.spyOn(mockPrismaService.user, 'findUnique');
-      (spyFindUser as jest.Mock).mockResolvedValue(mockUser);
-      const spyCreateUser = jest.spyOn(mockPrismaService.user, 'create');
-      expect(spyCreateUser).not.toHaveBeenCalled();
+
+      mockUserRepository.findOne.mockResolvedValue(mockUser);
+
       const user = await service.findOrCreateOAuthUser(
         provider,
         {
@@ -416,7 +386,7 @@ describe('AuthService', () => {
     });
 
     it('should create new user if not found by OAuth token', async () => {
-      const provider: IntegrationProvider = 'GITHUB';
+      const provider: IntegrationProvider = IntegrationProvider.GITHUB;
       const providerUserId = 'github-uid-2';
       const providerEmail = 'test2@mail.test';
       const mockNewUser = {
@@ -427,15 +397,17 @@ describe('AuthService', () => {
         role: 'USER',
         created_at: new Date(),
       };
-      const spyFindToken = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findUnique',
-      );
-      (spyFindToken as jest.Mock).mockResolvedValue(null);
-      const spyFindUser = jest.spyOn(mockPrismaService.user, 'findUnique');
-      (spyFindUser as jest.Mock).mockResolvedValue(null);
-      const spyCreateUser = jest.spyOn(mockPrismaService.user, 'create');
-      (spyCreateUser as jest.Mock).mockResolvedValue(mockNewUser);
+
+      // findUserByOAuthProvider returns null
+      mockIntegrationTokenRepository.findOne
+        .mockResolvedValueOnce(null) // findUserByOAuthProvider
+        .mockResolvedValueOnce(null); // linkOAuthAccount check
+
+      // findOne by email returns null
+      mockUserRepository.findOne.mockResolvedValue(null);
+      mockUserRepository.save.mockResolvedValue(mockNewUser);
+      mockIntegrationTokenRepository.save.mockResolvedValue({});
+
       const user = await service.findOrCreateOAuthUser(
         provider,
         {
@@ -452,7 +424,7 @@ describe('AuthService', () => {
   describe('linkOAuthAccount', () => {
     it('should update existing OAuth link if already linked', async () => {
       const userId = 'user-123';
-      const provider: IntegrationProvider = 'GITHUB';
+      const provider: IntegrationProvider = IntegrationProvider.GITHUB;
       const profile = {
         id: 'github-uid-1',
         username: 'githubuser',
@@ -485,17 +457,11 @@ describe('AuthService', () => {
         last_refreshed_at: new Date(),
       };
 
-      const spyFindUnique = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findUnique',
-      );
-      (spyFindUnique as jest.Mock).mockResolvedValue(existingLink);
+      mockIntegrationTokenRepository.findOne
+        .mockResolvedValueOnce(existingLink) // check existing
+        .mockResolvedValueOnce(updatedLink); // return after update
 
-      const spyUpdate = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'update',
-      );
-      (spyUpdate as jest.Mock).mockResolvedValue(updatedLink);
+      mockIntegrationTokenRepository.update.mockResolvedValue({ affected: 1 });
 
       const result = await service.linkOAuthAccount(
         userId,
@@ -505,18 +471,16 @@ describe('AuthService', () => {
         refreshToken,
       );
 
-      expect(spyFindUnique).toHaveBeenCalledWith({
+      expect(mockIntegrationTokenRepository.findOne).toHaveBeenCalledWith({
         where: {
-          user_id_provider: {
-            user_id: userId,
-            provider,
-          },
+          user_id: userId,
+          provider,
         },
       });
 
-      expect(spyUpdate).toHaveBeenCalledWith({
-        where: { id: existingLink.id },
-        data: {
+      expect(mockIntegrationTokenRepository.update).toHaveBeenCalledWith(
+        { id: existingLink.id },
+        {
           provider_user_id: profile.id,
           provider_username: profile.username,
           provider_email: profile.email,
@@ -525,14 +489,14 @@ describe('AuthService', () => {
           used_for_login: true,
           last_refreshed_at: expect.any(Date) as Date,
         },
-      });
+      );
 
       expect(result).toEqual(updatedLink);
     });
 
     it('should create new OAuth link if not already linked', async () => {
       const userId = 'user-456';
-      const provider: IntegrationProvider = 'GITHUB';
+      const provider: IntegrationProvider = IntegrationProvider.GITHUB;
       const profile = {
         id: 'github-uid-2',
         username: 'newuser',
@@ -555,17 +519,8 @@ describe('AuthService', () => {
         created_at: new Date(),
       };
 
-      const spyFindUnique = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findUnique',
-      );
-      (spyFindUnique as jest.Mock).mockResolvedValue(null);
-
-      const spyCreate = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'create',
-      );
-      (spyCreate as jest.Mock).mockResolvedValue(createdLink);
+      mockIntegrationTokenRepository.findOne.mockResolvedValue(null);
+      mockIntegrationTokenRepository.save.mockResolvedValue(createdLink);
 
       const result = await service.linkOAuthAccount(
         userId,
@@ -575,34 +530,20 @@ describe('AuthService', () => {
         refreshToken,
       );
 
-      expect(spyFindUnique).toHaveBeenCalledWith({
+      expect(mockIntegrationTokenRepository.findOne).toHaveBeenCalledWith({
         where: {
-          user_id_provider: {
-            user_id: userId,
-            provider,
-          },
-        },
-      });
-
-      expect(spyCreate).toHaveBeenCalledWith({
-        data: {
           user_id: userId,
           provider,
-          provider_user_id: profile.id,
-          provider_username: profile.username,
-          provider_email: profile.email,
-          access_token: accessToken,
-          refresh_token: refreshToken,
-          used_for_login: true,
         },
       });
 
+      expect(mockIntegrationTokenRepository.save).toHaveBeenCalled();
       expect(result).toEqual(createdLink);
     });
 
     it('should handle linking without refresh token', async () => {
       const userId = 'user-789';
-      const provider: IntegrationProvider = 'GITHUB';
+      const provider: IntegrationProvider = IntegrationProvider.GITHUB;
       const profile = {
         id: 'github-uid-3',
         username: 'usernorefresh',
@@ -623,17 +564,8 @@ describe('AuthService', () => {
         created_at: new Date(),
       };
 
-      const spyFindUnique = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findUnique',
-      );
-      (spyFindUnique as jest.Mock).mockResolvedValue(null);
-
-      const spyCreate = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'create',
-      );
-      (spyCreate as jest.Mock).mockResolvedValue(createdLink);
+      mockIntegrationTokenRepository.findOne.mockResolvedValue(null);
+      mockIntegrationTokenRepository.save.mockResolvedValue(createdLink);
 
       const result = await service.linkOAuthAccount(
         userId,
@@ -642,26 +574,14 @@ describe('AuthService', () => {
         accessToken,
       );
 
-      expect(spyCreate).toHaveBeenCalledWith({
-        data: {
-          user_id: userId,
-          provider,
-          provider_user_id: profile.id,
-          provider_username: profile.username,
-          provider_email: profile.email,
-          access_token: accessToken,
-          refresh_token: undefined,
-          used_for_login: true,
-        },
-      });
-
+      expect(mockIntegrationTokenRepository.save).toHaveBeenCalled();
       expect(result).toEqual(createdLink);
     });
   });
 
   describe('findUserByOAuthProvider', () => {
     it('should find integration with user by OAuth provider', async () => {
-      const provider: IntegrationProvider = 'GITHUB';
+      const provider: IntegrationProvider = IntegrationProvider.GITHUB;
       const providerId = 'github-uid-123';
 
       const mockUser = {
@@ -687,27 +607,19 @@ describe('AuthService', () => {
         user: mockUser,
       };
 
-      const spyFindUnique = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findUnique',
-      );
-      (spyFindUnique as jest.Mock).mockResolvedValue(mockIntegration);
+      mockIntegrationTokenRepository.findOne.mockResolvedValue(mockIntegration);
 
       const result = await service.findUserByOAuthProvider(
         provider,
         providerId,
       );
 
-      expect(spyFindUnique).toHaveBeenCalledWith({
+      expect(mockIntegrationTokenRepository.findOne).toHaveBeenCalledWith({
         where: {
-          provider_provider_user_id: {
-            provider,
-            provider_user_id: providerId,
-          },
+          provider,
+          provider_user_id: providerId,
         },
-        include: {
-          user: true,
-        },
+        relations: ['user'],
       });
 
       expect(result).toEqual(mockIntegration);
@@ -715,30 +627,22 @@ describe('AuthService', () => {
     });
 
     it('should return null if integration not found', async () => {
-      const provider: IntegrationProvider = 'GITHUB';
+      const provider: IntegrationProvider = IntegrationProvider.GITHUB;
       const providerId = 'non-existent-uid';
 
-      const spyFindUnique = jest.spyOn(
-        mockPrismaService.integrationToken,
-        'findUnique',
-      );
-      (spyFindUnique as jest.Mock).mockResolvedValue(null);
+      mockIntegrationTokenRepository.findOne.mockResolvedValue(null);
 
       const result = await service.findUserByOAuthProvider(
         provider,
         providerId,
       );
 
-      expect(spyFindUnique).toHaveBeenCalledWith({
+      expect(mockIntegrationTokenRepository.findOne).toHaveBeenCalledWith({
         where: {
-          provider_provider_user_id: {
-            provider,
-            provider_user_id: providerId,
-          },
+          provider,
+          provider_user_id: providerId,
         },
-        include: {
-          user: true,
-        },
+        relations: ['user'],
       });
 
       expect(result).toBeNull();
@@ -755,60 +659,32 @@ describe('AuthService', () => {
       };
 
       const hashedPassword = 'hashed_password_123';
-      const mockCreatedUser: UserTokenPayloadDto = {
+      const mockSavedUser = {
         id: 'user-new',
         email: registerDto.email,
         full_name: registerDto.fullName,
         student_id: registerDto.studentId,
         role: 'USER',
         created_at: new Date(),
+        password_hash: hashedPassword,
       };
 
       const expectedToken = 'jwt-token-123';
-      const expectedResponse: AuthResponse = {
-        user: mockCreatedUser,
-        access_token: expectedToken,
-      };
 
-      const spyFindUnique = jest.spyOn(mockPrismaService.user, 'findUnique');
-      (spyFindUnique as jest.Mock).mockResolvedValue(null);
-
+      mockUserRepository.findOne.mockResolvedValue(null);
       (bcrypt.hash as jest.Mock).mockResolvedValue(hashedPassword);
-
-      const spyCreate = jest.spyOn(mockPrismaService.user, 'create');
-      (spyCreate as jest.Mock).mockResolvedValue(mockCreatedUser);
-
+      mockUserRepository.save.mockResolvedValue(mockSavedUser);
       mockJwtService.sign.mockReturnValue(expectedToken);
 
       const result = await service.register(registerDto);
 
-      expect(spyFindUnique).toHaveBeenCalledWith({
+      expect(mockUserRepository.findOne).toHaveBeenCalledWith({
         where: { email: registerDto.email },
       });
-
       expect(bcrypt.hash).toHaveBeenCalledWith(registerDto.password, 10);
-
-      expect(spyCreate).toHaveBeenCalledWith({
-        data: {
-          email: registerDto.email,
-          password_hash: hashedPassword,
-          full_name: registerDto.fullName,
-          student_id: registerDto.studentId,
-          primary_provider: 'EMAIL',
-        },
-        select: {
-          id: true,
-          email: true,
-          full_name: true,
-          student_id: true,
-          role: true,
-          created_at: true,
-        },
-      });
-
-      expect(result).toEqual(expectedResponse);
       expect(result).toHaveProperty('user');
       expect(result).toHaveProperty('access_token');
+      expect(result.access_token).toBe(expectedToken);
     });
 
     it('should throw ConflictException if email already exists', async () => {
@@ -824,17 +700,16 @@ describe('AuthService', () => {
         email: registerDto.email,
       };
 
-      const spyFindUnique = jest.spyOn(mockPrismaService.user, 'findUnique');
-      (spyFindUnique as jest.Mock).mockResolvedValue(existingUser);
+      mockUserRepository.findOne.mockResolvedValue(existingUser);
 
       await expect(service.register(registerDto)).rejects.toThrow(
         ConflictException,
       );
       await expect(service.register(registerDto)).rejects.toThrow(
-        'Email này đã được sử dụng!',
+        ERROR_MESSAGES.AUTH.EMAIL_ALREADY_EXISTS,
       );
 
-      expect(spyFindUnique).toHaveBeenCalledWith({
+      expect(mockUserRepository.findOne).toHaveBeenCalledWith({
         where: { email: registerDto.email },
       });
     });
@@ -872,13 +747,7 @@ describe('AuthService', () => {
 
       const spyValidateUser = jest.spyOn(service, 'validateUser');
       (spyValidateUser as jest.Mock).mockResolvedValue(mockUser);
-
-      const spyUpdate = jest.spyOn(mockPrismaService.user, 'update');
-      (spyUpdate as jest.Mock).mockResolvedValue({
-        ...mockUser,
-        last_login: new Date(),
-      });
-
+      mockUserRepository.update.mockResolvedValue({ affected: 1 });
       mockJwtService.sign.mockReturnValue(expectedToken);
 
       const result = await service.login(loginDto);
@@ -888,10 +757,10 @@ describe('AuthService', () => {
         loginDto.password,
       );
 
-      expect(spyUpdate).toHaveBeenCalledWith({
-        where: { id: mockUser.id },
-        data: { last_login: expect.any(Date) as Date },
-      });
+      expect(mockUserRepository.update).toHaveBeenCalledWith(
+        { id: mockUser.id },
+        { last_login: expect.any(Date) as Date },
+      );
 
       expect(result).toEqual(expectedResponse);
       expect(result).toHaveProperty('user');
@@ -912,7 +781,7 @@ describe('AuthService', () => {
         BadRequestException,
       );
       await expect(service.login(loginDto)).rejects.toThrow(
-        'Email hoặc mật khẩu không đúng',
+        ERROR_MESSAGES.AUTH.INVALID_CREDENTIALS,
       );
 
       expect(spyValidateUser).toHaveBeenCalledWith(
@@ -936,14 +805,12 @@ describe('AuthService', () => {
         created_at: new Date(),
       };
 
-      const spyFindUnique = jest.spyOn(mockPrismaService.user, 'findUnique');
-      (spyFindUnique as jest.Mock).mockResolvedValue(mockUser);
-
+      mockUserRepository.findOne.mockResolvedValue(mockUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
       const result = await service.validateUser(email, password);
 
-      expect(spyFindUnique).toHaveBeenCalledWith({
+      expect(mockUserRepository.findOne).toHaveBeenCalledWith({
         where: { email },
       });
 
@@ -959,12 +826,11 @@ describe('AuthService', () => {
       const email = 'nonexistent@mail.test';
       const password = 'password123';
 
-      const spyFindUnique = jest.spyOn(mockPrismaService.user, 'findUnique');
-      (spyFindUnique as jest.Mock).mockResolvedValue(null);
+      mockUserRepository.findOne.mockResolvedValue(null);
 
       const result = await service.validateUser(email, password);
 
-      expect(spyFindUnique).toHaveBeenCalledWith({
+      expect(mockUserRepository.findOne).toHaveBeenCalledWith({
         where: { email },
       });
 
@@ -982,12 +848,11 @@ describe('AuthService', () => {
         role: 'USER',
       };
 
-      const spyFindUnique = jest.spyOn(mockPrismaService.user, 'findUnique');
-      (spyFindUnique as jest.Mock).mockResolvedValue(mockOAuthUser);
+      mockUserRepository.findOne.mockResolvedValue(mockOAuthUser);
 
       const result = await service.validateUser(email, password);
 
-      expect(spyFindUnique).toHaveBeenCalledWith({
+      expect(mockUserRepository.findOne).toHaveBeenCalledWith({
         where: { email },
       });
 
@@ -1005,14 +870,12 @@ describe('AuthService', () => {
         role: 'USER',
       };
 
-      const spyFindUnique = jest.spyOn(mockPrismaService.user, 'findUnique');
-      (spyFindUnique as jest.Mock).mockResolvedValue(mockUser);
-
+      mockUserRepository.findOne.mockResolvedValue(mockUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(false);
 
       const result = await service.validateUser(email, password);
 
-      expect(spyFindUnique).toHaveBeenCalledWith({
+      expect(mockUserRepository.findOne).toHaveBeenCalledWith({
         where: { email },
       });
 

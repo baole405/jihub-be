@@ -2,7 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule, JwtModuleOptions } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
-import { PrismaModule } from '../../prisma/prisma.module';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { User, IntegrationToken } from '../../entities';
 import { RedisModule } from '../../redis/redis.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
@@ -12,7 +13,7 @@ import { HttpModule } from '@nestjs/axios';
 @Module({
   imports: [
     HttpModule,
-    PrismaModule,
+    TypeOrmModule.forFeature([User, IntegrationToken]),
     PassportModule.register({ session: false }),
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -20,7 +21,7 @@ import { HttpModule } from '@nestjs/axios';
         const expiresIn = configService.get<string>('JWT_EXPIRES_IN', '7d');
         return {
           secret: configService.get<string>('JWT_SECRET', 'your-secret-key'),
-          signOptions: { expiresIn } as unknown, // Type assertion for string values like '7d'
+          signOptions: { expiresIn } as unknown,
         } as JwtModuleOptions;
       },
       inject: [ConfigService],

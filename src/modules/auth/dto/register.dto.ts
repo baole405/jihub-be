@@ -10,28 +10,28 @@ import {
 export class RegisterDto {
   @ApiProperty({
     example: 'newuser@example.com',
-    description: 'Địa chỉ email đăng ký',
+    description: 'Registration email address',
   })
-  @IsEmail({}, { message: 'Email không hợp lệ' })
+  @IsEmail({}, { message: 'Invalid email format' })
   @IsNotEmpty()
   email: string;
 
   @ApiProperty({
     example: 'securePassword123',
-    description: 'Mật khẩu (tối thiểu 6 ký tự)',
+    description: 'Password (minimum 6 characters)',
   })
   @IsString()
-  @MinLength(6, { message: 'Mật khẩu phải tối thiểu 6 ký tự' })
+  @MinLength(6, { message: 'Password must be at least 6 characters' })
   password: string;
 
-  @ApiProperty({ example: 'Nguyễn Văn A', description: 'Họ và tên đầy đủ' })
+  @ApiProperty({ example: 'John Doe', description: 'Full name' })
   @IsString()
-  @IsNotEmpty({ message: 'Tên đầy đủ là bắt buộc' })
+  @IsNotEmpty({ message: 'Full name is required' })
   fullName: string;
 
   @ApiProperty({
     example: 'SE123456',
-    description: 'Mã số sinh viên (tùy chọn)',
+    description: 'Student ID (optional)',
     required: false,
   })
   @IsString()

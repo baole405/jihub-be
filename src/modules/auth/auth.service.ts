@@ -5,9 +5,16 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { AuthProvider, IntegrationProvider, User } from '@prisma/client';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import {
+  User,
+  IntegrationToken,
+  AuthProvider,
+  IntegrationProvider,
+} from '../../entities';
+import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../../common/constants';
 import * as bcrypt from 'bcrypt';
-import { PrismaService } from '../../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 import { HttpService } from '@nestjs/axios';
@@ -85,7 +92,10 @@ export interface GitHubUserEmail {
 @Injectable()
 export class AuthService {
   constructor(
-    private prisma: PrismaService,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+    @InjectRepository(IntegrationToken)
+    private readonly integrationTokenRepository: Repository<IntegrationToken>,
     private jwtService: JwtService,
     private httpService: HttpService,
     private configService: ConfigService,
@@ -94,36 +104,34 @@ export class AuthService {
   // ============ Email/Password Authentication ============
 
   async register(registerDto: RegisterDto): Promise<AuthResponse> {
-    // Check if email exists
-    const existingUser = await this.prisma.user.findUnique({
+    const existingUser = await this.userRepository.findOne({
       where: { email: registerDto.email },
     });
 
     if (existingUser) {
-      throw new ConflictException('Email này đã được sử dụng!');
+      throw new ConflictException(ERROR_MESSAGES.AUTH.EMAIL_ALREADY_EXISTS);
     }
 
-    // Hash password
     const hashedPassword = await bcrypt.hash(registerDto.password, 10);
 
-    // Create user
-    const user: UserTokenPayloadDto = await this.prisma.user.create({
-      data: {
-        email: registerDto.email,
-        password_hash: hashedPassword,
-        full_name: registerDto.fullName,
-        student_id: registerDto.studentId,
-        primary_provider: AuthProvider.EMAIL,
-      },
-      select: {
-        id: true,
-        email: true,
-        full_name: true,
-        student_id: true,
-        role: true,
-        created_at: true,
-      },
+    const newUser = this.userRepository.create({
+      email: registerDto.email,
+      password_hash: hashedPassword,
+      full_name: registerDto.fullName,
+      student_id: registerDto.studentId,
+      primary_provider: AuthProvider.EMAIL,
     });
+
+    const savedUser = await this.userRepository.save(newUser);
+
+    const user: UserTokenPayloadDto = {
+      id: savedUser.id,
+      email: savedUser.email,
+      full_name: savedUser.full_name,
+      student_id: savedUser.student_id,
+      role: savedUser.role,
+      created_at: savedUser.created_at,
+    };
 
     return {
       user,
@@ -138,14 +146,13 @@ export class AuthService {
     );
 
     if (!user) {
-      throw new BadRequestException('Email hoặc mật khẩu không đúng');
+      throw new BadRequestException(ERROR_MESSAGES.AUTH.INVALID_CREDENTIALS);
     }
 
-    // Update last login
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { last_login: new Date() },
-    });
+    await this.userRepository.update(
+      { id: user.id },
+      { last_login: new Date() },
+    );
 
     const userTokenPayloadDto: UserTokenPayloadDto = {
       id: user.id,
@@ -171,7 +178,7 @@ export class AuthService {
   }
 
   async validateUser(email: string, password: string) {
-    const user = await this.prisma.user.findUnique({
+    const user = await this.userRepository.findOne({
       where: { email },
     });
 
@@ -190,31 +197,21 @@ export class AuthService {
 
   // ============ OAuth Account Linking ============
 
-  /**
-   * Find user by OAuth provider
-   */
   async findUserByOAuthProvider(
     provider: IntegrationProvider,
     providerId: string,
   ) {
-    const integration = await this.prisma.integrationToken.findUnique({
+    const integration = await this.integrationTokenRepository.findOne({
       where: {
-        provider_provider_user_id: {
-          provider,
-          provider_user_id: providerId,
-        },
+        provider,
+        provider_user_id: providerId,
       },
-      include: {
-        user: true,
-      },
+      relations: ['user'],
     });
 
     return integration;
   }
 
-  /**
-   * Link an OAuth account to an existing user
-   */
   async linkOAuthAccount(
     userId: string,
     provider: IntegrationProvider,
@@ -222,21 +219,17 @@ export class AuthService {
     accessToken: string,
     refreshToken?: string,
   ) {
-    // Check if this provider is already linked to this user
-    const existingLink = await this.prisma.integrationToken.findUnique({
+    const existingLink = await this.integrationTokenRepository.findOne({
       where: {
-        user_id_provider: {
-          user_id: userId,
-          provider,
-        },
+        user_id: userId,
+        provider,
       },
     });
 
     if (existingLink) {
-      // Update existing link
-      return this.prisma.integrationToken.update({
-        where: { id: existingLink.id },
-        data: {
+      await this.integrationTokenRepository.update(
+        { id: existingLink.id },
+        {
           provider_user_id: profile.id,
           provider_username: profile.username,
           provider_email: profile.email,
@@ -245,35 +238,32 @@ export class AuthService {
           used_for_login: true,
           last_refreshed_at: new Date(),
         },
+      );
+      return this.integrationTokenRepository.findOne({
+        where: { id: existingLink.id },
       });
     }
 
-    // Create new link
-    return this.prisma.integrationToken.create({
-      data: {
-        user_id: userId,
-        provider,
-        provider_user_id: profile.id,
-        provider_username: profile.username,
-        provider_email: profile.email,
-        access_token: accessToken,
-        refresh_token: refreshToken,
-        used_for_login: true,
-      },
+    const newLink = this.integrationTokenRepository.create({
+      user_id: userId,
+      provider,
+      provider_user_id: profile.id,
+      provider_username: profile.username,
+      provider_email: profile.email,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      used_for_login: true,
     });
+
+    return this.integrationTokenRepository.save(newLink);
   }
 
-  /**
-   * Find or create user from OAuth profile
-   * Used when user logs in with OAuth for the first time
-   */
   async findOrCreateOAuthUser(
     provider: IntegrationProvider,
     profile: OAuthProfile,
     accessToken: string,
     refreshToken?: string,
   ): Promise<User> {
-    // Check if this OAuth account is already linked
     const existingIntegration = await this.findUserByOAuthProvider(
       provider,
       profile.id,
@@ -283,14 +273,12 @@ export class AuthService {
       return existingIntegration.user;
     }
 
-    // Check if a user with this email exists
     if (profile.email) {
-      const existingUser = await this.prisma.user.findUnique({
+      const existingUser = await this.userRepository.findOne({
         where: { email: profile.email },
       });
 
       if (existingUser) {
-        // Auto-link this OAuth account to the existing user
         await this.linkOAuthAccount(
           existingUser.id,
           provider,
@@ -302,56 +290,47 @@ export class AuthService {
       }
     }
 
-    // Create a new user from OAuth profile
-    const newUser: User = await this.prisma.user.create({
-      data: {
-        email:
-          profile.email ||
-          `${provider.toLowerCase()}_${profile.id}@placeholder.local`,
-        full_name: profile.displayName || profile.username || 'User',
-        avatar_url: profile.photos?.[0]?.value,
-        primary_provider:
-          provider === IntegrationProvider.GITHUB
-            ? AuthProvider.GITHUB
-            : AuthProvider.JIRA,
-        password_hash: null, // OAuth users don't have password
-      },
+    const newUser = this.userRepository.create({
+      email:
+        profile.email ||
+        `${provider.toLowerCase()}_${profile.id}@placeholder.local`,
+      full_name: profile.displayName || profile.username || 'User',
+      avatar_url: profile.photos?.[0]?.value,
+      primary_provider:
+        provider === IntegrationProvider.GITHUB
+          ? AuthProvider.GITHUB
+          : AuthProvider.JIRA,
+      password_hash: null,
     });
 
-    // Link the OAuth account
+    const savedUser = await this.userRepository.save(newUser);
+
     await this.linkOAuthAccount(
-      newUser.id,
+      savedUser.id,
       provider,
       profile,
       accessToken,
       refreshToken,
     );
 
-    return newUser;
+    return savedUser;
   }
 
-  /**
-   * Unlink an OAuth provider from a user
-   */
   async unlinkOAuthAccount(userId: string, provider: IntegrationProvider) {
-    const integration = await this.prisma.integrationToken.findUnique({
+    const integration = await this.integrationTokenRepository.findOne({
       where: {
-        user_id_provider: {
-          user_id: userId,
-          provider,
-        },
+        user_id: userId,
+        provider,
       },
     });
 
     if (!integration) {
-      throw new BadRequestException('Tài khoản này chưa được liên kết');
+      throw new BadRequestException(ERROR_MESSAGES.AUTH.ACCOUNT_NOT_LINKED);
     }
 
-    await this.prisma.integrationToken.delete({
-      where: { id: integration.id },
-    });
+    await this.integrationTokenRepository.delete({ id: integration.id });
 
-    return { message: 'Đã hủy liên kết thành công' };
+    return { message: SUCCESS_MESSAGES.AUTH.ACCOUNT_UNLINKED };
   }
 
   // ============ GitHub OAuth Manual Flow ============
@@ -361,11 +340,10 @@ export class AuthService {
     const clientSecret = this.configService.get<string>('GH_CLIENT_SECRET');
 
     if (!clientId || !clientSecret) {
-      throw new BadRequestException('GitHub OAuth is not configured');
+      throw new BadRequestException(ERROR_MESSAGES.AUTH.GITHUB_NOT_CONFIGURED);
     }
 
     try {
-      // Step 1: Exchange code for access token
       const tokenResponse =
         await this.httpService.axiosRef.post<GitHubTokenResponse>(
           'https://github.com/login/oauth/access_token',
@@ -385,10 +363,11 @@ export class AuthService {
       const tokenData: GitHubTokenResponse = tokenResponse.data;
 
       if (!tokenData.access_token) {
-        throw new BadRequestException('Failed to exchange code for token');
+        throw new BadRequestException(
+          ERROR_MESSAGES.AUTH.GITHUB_TOKEN_EXCHANGE_FAILED,
+        );
       }
 
-      // Step 2: Fetch user profile from GitHub
       const profileResponse =
         await this.httpService.axiosRef.get<GitHubUserProfile>(
           'https://api.github.com/user',
@@ -402,7 +381,6 @@ export class AuthService {
 
       const profile: GitHubUserProfile = profileResponse.data;
 
-      // Step 3: Fetch user emails
       const emailResponse = await this.httpService.axiosRef.get<
         GitHubUserEmail[]
       >('https://api.github.com/user/emails', {
@@ -417,7 +395,6 @@ export class AuthService {
         (e: GitHubUserEmail) => e.primary,
       )!.email;
 
-      // Step 4: Create OAuth profile
       const oauthProfile = {
         id: String(profile.id),
         username: profile.login,
@@ -426,7 +403,6 @@ export class AuthService {
         photos: profile.avatar_url ? [{ value: profile.avatar_url }] : [],
       };
 
-      // Step 5: Find or create user
       const user = await this.findOrCreateOAuthUser(
         IntegrationProvider.GITHUB,
         oauthProfile,
@@ -439,7 +415,7 @@ export class AuthService {
       const serviceName = this.constructor.name;
       const methodName = this.handleGitHubCallback.name;
       console.error(`[${serviceName} - ${methodName}]`, error);
-      throw new BadRequestException('GitHub OAuth failed. Please try again.');
+      throw new BadRequestException(ERROR_MESSAGES.AUTH.GITHUB_OAUTH_FAILED);
     }
   }
 
@@ -455,11 +431,8 @@ export class AuthService {
     return this.jwtService.sign(payload);
   }
 
-  /**
-   * Get user's linked OAuth accounts
-   */
   async getLinkedAccounts(userId: string) {
-    return this.prisma.integrationToken.findMany({
+    return this.integrationTokenRepository.find({
       where: {
         user_id: userId,
         used_for_login: true,

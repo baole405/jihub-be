@@ -22,7 +22,8 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { IntegrationProvider } from '@prisma/client';
+import { IntegrationProvider } from '../../entities';
+import { ERROR_MESSAGES } from '../../common/constants';
 import { randomUUID } from 'crypto';
 import type { Request, Response } from 'express';
 import { RedisService } from '../../redis/redis.service';
@@ -97,7 +98,7 @@ export class AuthController {
       ?.split(',') || ['http://localhost:3000', 'http://localhost:5173'];
 
     if (!redirectUri || !allowedOrigins.includes(redirectUri)) {
-      throw new BadRequestException('Invalid or missing redirect_uri');
+      throw new BadRequestException(ERROR_MESSAGES.AUTH.INVALID_REDIRECT_URI);
     }
 
     // Generate state and store redirect_uri
@@ -127,14 +128,14 @@ export class AuthController {
   ) {
     // Validate required parameters
     if (!code || code.length === 0 || !state || state.length === 0) {
-      throw new BadRequestException('Missing parameter');
+      throw new BadRequestException(ERROR_MESSAGES.AUTH.MISSING_PARAMETER);
     }
 
     // Retrieve redirect_uri from Redis using state
     const redirectUri = await this.redisService.getOAuthState(state);
 
     if (!redirectUri) {
-      throw new BadRequestException('Invalid or expired OAuth state');
+      throw new BadRequestException(ERROR_MESSAGES.AUTH.INVALID_OAUTH_STATE);
     }
 
     // Delete state from Redis (one-time use)
@@ -220,7 +221,7 @@ export class AuthController {
     @Param('provider') provider: string,
   ) {
     if (!['GITHUB', 'JIRA'].includes(provider.toUpperCase())) {
-      throw new BadRequestException('Invalid provider');
+      throw new BadRequestException(ERROR_MESSAGES.AUTH.INVALID_PROVIDER);
     }
     const providerEnum = provider.toUpperCase();
     return await this.authService.unlinkOAuthAccount(

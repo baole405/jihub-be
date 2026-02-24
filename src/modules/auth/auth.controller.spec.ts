@@ -6,6 +6,7 @@ import { RedisService } from '../../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { ConflictException, BadRequestException } from '@nestjs/common';
+import { ERROR_MESSAGES } from '../../common/constants';
 
 describe('AuthController', () => {
   let authController: AuthController;
@@ -82,14 +83,14 @@ describe('AuthController', () => {
       };
 
       mockAuthService.register.mockRejectedValue(
-        new ConflictException('Email này đã được sử dụng!'),
+        new ConflictException(ERROR_MESSAGES.AUTH.EMAIL_ALREADY_EXISTS),
       );
 
       await expect(authController.register(registerDto)).rejects.toThrow(
         ConflictException,
       );
       await expect(authController.register(registerDto)).rejects.toThrow(
-        'Email này đã được sử dụng!',
+        ERROR_MESSAGES.AUTH.EMAIL_ALREADY_EXISTS,
       );
 
       expect(spyRegister).toHaveBeenCalledWith(registerDto);
@@ -132,14 +133,14 @@ describe('AuthController', () => {
       };
 
       mockAuthService.login.mockRejectedValue(
-        new BadRequestException('Email hoặc mật khẩu không đúng'),
+        new BadRequestException(ERROR_MESSAGES.AUTH.INVALID_CREDENTIALS),
       );
 
       await expect(authController.login(loginDto)).rejects.toThrow(
         BadRequestException,
       );
       await expect(authController.login(loginDto)).rejects.toThrow(
-        'Email hoặc mật khẩu không đúng',
+        ERROR_MESSAGES.AUTH.INVALID_CREDENTIALS,
       );
 
       expect(spyLogin).toHaveBeenCalledWith(loginDto);
