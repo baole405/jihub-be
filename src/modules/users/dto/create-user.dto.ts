@@ -3,21 +3,21 @@ import { ApiProperty } from '@nestjs/swagger';
 
 export class CreateUserDto {
   @ApiProperty({ example: 'admin_created@example.com' })
-  @IsEmail({}, { message: 'Email không hợp lệ' })
+  @IsEmail({}, { message: 'Invalid email format' })
   @IsNotEmpty()
   email: string;
 
-  @ApiProperty({ example: 'SE112233', description: 'Mã số sinh viên' })
+  @ApiProperty({ example: 'SE112233', description: 'Student ID' })
   @IsNotEmpty()
   student_id: string;
 
   @ApiProperty({ example: 'adminPassword123' })
   @IsString()
-  @MinLength(6, { message: 'Mật khẩu phải tối thiểu 6 ký tự' })
+  @MinLength(6, { message: 'Password must be at least 6 characters' })
   password: string;
 
-  @ApiProperty({ example: 'Trần Thị B' })
+  @ApiProperty({ example: 'Jane Doe' })
   @IsString()
-  @IsNotEmpty({ message: 'Tên đầy đủ là bắt buộc' })
+  @IsNotEmpty({ message: 'Full name is required' })
   full_name: string;
 }

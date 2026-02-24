@@ -1,68 +1,68 @@
 import { Injectable, ConflictException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { User, AuthProvider } from '../../entities';
+import { ERROR_MESSAGES } from '../../common/constants';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { PrismaService } from '../../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+  ) {}
 
   async create(createUserDto: CreateUserDto) {
-    // Bước 1: Kiểm tra xem email đã tồn tại chưa
-    const existingUser = await this.prisma.user.findUnique({
+    const existingUser = await this.userRepository.findOne({
       where: { email: createUserDto.email },
     });
 
     if (existingUser) {
-      throw new ConflictException('Email này đã được sử dụng!');
+      throw new ConflictException(ERROR_MESSAGES.AUTH.EMAIL_ALREADY_EXISTS);
     }
 
-    // Bước 2: Mã hóa mật khẩu (Hashing)
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(createUserDto.password, salt);
 
-    // Bước 3: Lưu vào Database
-    const newUser = await this.prisma.user.create({
-      data: {
-        email: createUserDto.email,
-        password_hash: hashedPassword, // Changed to password_hash
-        full_name: createUserDto.full_name,
-        student_id: createUserDto.student_id,
-        primary_provider: 'EMAIL', // Default to EMAIL for email/password registration
-      },
+    const newUser = this.userRepository.create({
+      email: createUserDto.email,
+      password_hash: hashedPassword,
+      full_name: createUserDto.full_name,
+      student_id: createUserDto.student_id,
+      primary_provider: AuthProvider.EMAIL,
     });
 
-    // Bước 4: Trả về kết quả (Loại bỏ password_hash để bảo mật)
-    const { password_hash, ...result } = newUser;
+    const savedUser = await this.userRepository.save(newUser);
+
+    const { password_hash, ...result } = savedUser;
     return result;
   }
 
   findAll() {
-    return this.prisma.user.findMany();
+    return this.userRepository.find();
   }
 
   findOne(id: string) {
-    return this.prisma.user.findUnique({ where: { id } });
+    return this.userRepository.findOne({ where: { id } });
   }
 
   async update(id: string, updateUserDto: UpdateUserDto) {
-    // Nếu có update password thì phải hash lại
     if (updateUserDto.password) {
       const hashedPassword = await bcrypt.hash(updateUserDto.password, 10);
       const { password, ...rest } = updateUserDto;
-      return this.prisma.user.update({
-        where: { id },
-        data: { ...rest, password_hash: hashedPassword },
+      await this.userRepository.update(id, {
+        ...rest,
+        password_hash: hashedPassword,
       });
+    } else {
+      await this.userRepository.update(id, updateUserDto);
     }
-    return this.prisma.user.update({
-      where: { id },
-      data: updateUserDto,
-    });
+    return this.userRepository.findOne({ where: { id } });
   }
 
-  remove(id: string) {
-    return this.prisma.user.delete({ where: { id } });
+  async remove(id: string) {
+    await this.userRepository.delete(id);
   }
 }
