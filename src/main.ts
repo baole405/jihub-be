@@ -55,22 +55,17 @@ async function bootstrap() {
       }),
     );
 
-  // Swagger setup
-  const swaggerConfig = getDocumentBuilder();
-  const documentFactory = SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup('api-docs', app, documentFactory, swaggerUiOptions);
+    // Swagger setup
+    const swaggerConfig = getDocumentBuilder();
+    const documentFactory = SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup('api-docs', app, documentFactory, swaggerUiOptions);
 
     const port = configService.get<number>('PORT', 3000);
-    const prismaStudioPort = configService.get<number>(
-      'PRISMA_STUDIO_PORT',
-      5555,
-    );
 
     await app.listen(port);
 
     logger.log(`Application is running on: http://localhost:${port}`);
-    logger.log(`Swagger UI is available at: http://localhost:${port}/api/docs`);
-    logger.log(`Prisma Studio: http://localhost:${prismaStudioPort}`);
+    logger.log(`Swagger UI is available at: http://localhost:${port}/api-docs`);
   } catch (error) {
     logger.error('Failed to start application', error);
     process.exit(1);
