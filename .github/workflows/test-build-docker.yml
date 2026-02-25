@@ -60,7 +60,7 @@ jobs:
         run: |
           docker run -d --name test-container -p 3000:3000 \
             --add-host=host.docker.internal:host-gateway \
-            -e DATABASE_URL="postgresql://test:test@host.docker.internal:5432/testdb?schema=public&connection_limit=1&connect_timeout=10" \
+            -e DATABASE_URL="postgresql://test:test@host.docker.internal:5432/testdb?connection_limit=1&connect_timeout=10" \
             -e JWT_SECRET="test-secret-key-for-ci" \
             -e GH_CLIENT_ID="test-github-id" \
             -e GH_CLIENT_SECRET="test-github-secret" \
@@ -80,7 +80,7 @@ jobs:
             fi
             if [ $i -eq 30 ]; then
               echo "✗ Application failed to start within 30 seconds"
-              echo "Container logs:"
+              echo "==== Container logs ===="
               docker logs test-container
               exit 1
             fi

@@ -1,7 +1,5 @@
 # Docker Compose Setup for WDP391 Backend
 
-version: "3.8"
-
 services:
   # PostgreSQL Database
   postgres:
@@ -46,13 +44,13 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: dockerfile
     container_name: wdp391-api
     restart: unless-stopped
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: ${PORT:-3000}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-wdp391}:${POSTGRES_PASSWORD:-wdp391password}@postgres:5432/${POSTGRES_DB:-wdp391_db}?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER:-wdp391}:${POSTGRES_PASSWORD:-wdp391password}@postgres:5432/${POSTGRES_DB:-wdp391_db}
       JWT_SECRET: ${JWT_SECRET:-your-super-secret-key-change-in-production}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
       GH_CLIENT_ID: ${GH_CLIENT_ID}
@@ -75,9 +73,8 @@ services:
     networks:
       - wdp391-network
     volumes:
-      - ./src:/app/src
-      - ./prisma:/app/prisma
-      - /app/node_modules
+      - ./src:/usr/src/app/src
+      - /usr/src/app/node_modules
     command: npm run start:prod
 
 networks:
