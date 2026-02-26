@@ -2,8 +2,8 @@ name: Sync Fork with Upstream
 
 on:
   schedule:
-    # Chạy mỗi 10 phút
-    - cron: '*/10 * * * *'
+    # Chạy mỗi 30 phút
+    - cron: '*/30 * * * *'
   workflow_dispatch: # Cho phép chạy thủ công từ GitHub Actions UI
 
 jobs:
