@@ -8,6 +8,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { GithubModule } from './modules/github/github.module';
 import { GroupsModule } from './modules/groups/groups.module';
 import { UsersModule } from './modules/users/users.module';
+import { JiraModule } from './modules/jira/jira.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { UsersModule } from './modules/users/users.module';
     AuthModule,
     GroupsModule,
     GithubModule,
+    JiraModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],
