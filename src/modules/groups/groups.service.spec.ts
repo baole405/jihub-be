@@ -1,19 +1,22 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { getRepositoryToken } from '@nestjs/typeorm';
 import {
   BadRequestException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { GroupsService } from './groups.service';
+import { Test, TestingModule } from '@nestjs/testing';
+import { getRepositoryToken } from '@nestjs/typeorm';
 import {
   Group,
   GroupMembership,
-  User,
-  Role,
-  MembershipRole,
   GroupStatus,
+  MembershipRole,
+  Role,
+  Topic,
+  User,
 } from '../../entities';
+import { GithubService } from '../github/github.service';
+import { JiraService } from '../jira/jira.service';
+import { GroupsService } from './groups.service';
 
 // ── Test fixtures ────────────────────────────────────────
 
@@ -130,6 +133,9 @@ describe('GroupsService', () => {
           useValue: membershipRepo,
         },
         { provide: getRepositoryToken(User), useValue: userRepo },
+        { provide: getRepositoryToken(Topic), useValue: {} },
+        { provide: GithubService, useValue: {} },
+        { provide: JiraService, useValue: {} },
       ],
     }).compile();
 

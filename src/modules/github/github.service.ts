@@ -242,4 +242,91 @@ export class GithubService {
       throw new BadRequestException('Failed to fetch commits from GitHub API');
     }
   }
+
+  async createRepository(
+    userId: string,
+    repoName: string,
+    description: string,
+  ) {
+    const token = await this.integrationTokenRepository.findOne({
+      where: { user_id: userId, provider: IntegrationProvider.GITHUB },
+    });
+
+    if (!token || !token.access_token) {
+      throw new BadRequestException(
+        'GitHub account is not linked for this user',
+      );
+    }
+
+    try {
+      const response = await lastValueFrom(
+        this.httpService.post(
+          'https://api.github.com/user/repos',
+          {
+            name: repoName,
+            description,
+            private: true,
+            auto_init: true, // Generate a quick README
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${token.access_token}`,
+              Accept: 'application/vnd.github.v3+json',
+            },
+          },
+        ),
+      );
+
+      return response.data;
+    } catch (error: any) {
+      console.error(
+        'GitHub API error creating repository:',
+        error?.response?.data || error.message,
+      );
+      throw new BadRequestException(
+        'Failed to create repository on GitHub: ' +
+          (error?.response?.data?.message || error.message),
+      );
+    }
+  }
+
+  async addCollaborator(
+    userId: string,
+    owner: string,
+    repoName: string,
+    targetGithubUsername: string,
+  ) {
+    const token = await this.integrationTokenRepository.findOne({
+      where: { user_id: userId, provider: IntegrationProvider.GITHUB },
+    });
+
+    if (!token || !token.access_token) {
+      throw new BadRequestException(
+        'GitHub account is not linked for this user',
+      );
+    }
+
+    try {
+      const response = await lastValueFrom(
+        this.httpService.put(
+          `https://api.github.com/repos/${owner}/${repoName}/collaborators/${targetGithubUsername}`,
+          { permission: 'push' },
+          {
+            headers: {
+              Authorization: `Bearer ${token.access_token}`,
+              Accept: 'application/vnd.github.v3+json',
+            },
+          },
+        ),
+      );
+      return response.data;
+    } catch (error: any) {
+      console.error(
+        'GitHub API error adding collaborator:',
+        error?.response?.data || error.message,
+      );
+      // It's okay if it fails (maybe the user didn't exist or already invited)
+      return null;
+    }
+  }
 }
