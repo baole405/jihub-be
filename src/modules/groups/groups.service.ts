@@ -6,19 +6,19 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, IsNull, Repository } from 'typeorm';
+import { ERROR_MESSAGES } from '../../common/constants';
 import {
   Group,
   GroupMembership,
-  User,
-  Role,
   MembershipRole,
+  Role,
+  User,
 } from '../../entities';
-import { ERROR_MESSAGES } from '../../common/constants';
-import { CreateGroupDto } from './dto/create-group.dto';
-import { UpdateGroupDto } from './dto/update-group.dto';
 import { AddMemberDto } from './dto/add-member.dto';
-import { UpdateMemberDto } from './dto/update-member.dto';
+import { CreateGroupDto } from './dto/create-group.dto';
 import { QueryGroupsDto } from './dto/query-groups.dto';
+import { UpdateGroupDto } from './dto/update-group.dto';
+import { UpdateMemberDto } from './dto/update-member.dto';
 
 @Injectable()
 export class GroupsService {
@@ -128,8 +128,9 @@ export class GroupsService {
   async findOne(groupId: string, userId: string, userRole: Role) {
     const group = await this.findOneById(groupId);
 
+    // Lecturers should be able to view groups, not just members.
     if (userRole === Role.STUDENT || userRole === Role.GROUP_LEADER) {
-      const isMember = group.members.some(
+      const isMember = group.members?.some(
         (m) => m.user_id === userId && m.left_at === null,
       );
       if (!isMember) {
@@ -138,6 +139,79 @@ export class GroupsService {
     }
 
     return this.formatGroupDetail(group);
+  }
+
+  async getGroupsByClass(classId: string, userId: string, userRole: Role) {
+    // Basic implementation: fetch all groups for this class_id
+    // Lecturers get all, Students get all to see availability
+    const qb = this.groupRepository
+      .createQueryBuilder('group')
+      .leftJoinAndSelect('group.topic', 'topic')
+      .loadRelationCountAndMap(
+        'group.members_count',
+        'group.members',
+        'memberCount',
+        (sqb) => sqb.where('memberCount.left_at IS NULL'),
+      )
+      .where('group.class_id = :classId', { classId })
+      .orderBy('group.name', 'ASC');
+
+    const groups = await qb.getMany();
+
+    return groups.map((g: any) => ({
+      id: g.id,
+      name: g.name,
+      project_name: g.project_name,
+      topic: g.topic,
+      members_count: g.members_count ?? 0,
+      status: g.status,
+    }));
+  }
+
+  async joinEmptyGroup(groupId: string, userId: string) {
+    await this.assertGroupExists(groupId);
+
+    // Ensure user is not already in a group for this class
+    const group = await this.groupRepository.findOne({
+      where: { id: groupId },
+    });
+    if (!group || !group.class_id)
+      throw new NotFoundException('Group or class not found');
+
+    const myOtherGroupsInClass = await this.membershipRepository
+      .createQueryBuilder('m')
+      .innerJoin('m.group', 'g')
+      .where('m.user_id = :userId', { userId })
+      .andWhere('g.class_id = :classId', { classId: group.class_id })
+      .andWhere('m.left_at IS NULL')
+      .getCount();
+
+    if (myOtherGroupsInClass > 0) {
+      throw new BadRequestException(
+        'You are already in a group for this class',
+      );
+    }
+
+    const membersCount = await this.membershipRepository.count({
+      where: { group_id: groupId, left_at: IsNull() },
+    });
+
+    if (membersCount >= 5) {
+      // Assuming 5 max per group
+      throw new BadRequestException('Group is already full');
+    }
+
+    const userRole =
+      membersCount === 0 ? MembershipRole.LEADER : MembershipRole.MEMBER;
+
+    const membership = this.membershipRepository.create({
+      group_id: groupId,
+      user_id: userId,
+      role_in_group: userRole,
+    });
+
+    await this.membershipRepository.save(membership);
+    return { message: 'Joined group successfully', role_assigned: userRole };
   }
 
   async update(
@@ -149,7 +223,19 @@ export class GroupsService {
     await this.assertGroupExists(groupId);
     await this.assertCanManageGroup(groupId, userId, userRole);
 
-    await this.groupRepository.update({ id: groupId }, dto);
+    await this.groupRepository.update(
+      { id: groupId },
+      {
+        name: dto.name,
+        project_name: dto.project_name,
+        description: dto.description,
+        semester: dto.semester,
+        github_repo_url: dto.github_repo_url,
+        jira_project_key: dto.jira_project_key,
+        status: dto.status,
+        topic_id: dto.topic_id,
+      },
+    );
 
     const group = await this.findOneById(groupId);
     return this.formatGroupDetail(group);
@@ -331,6 +417,7 @@ export class GroupsService {
       .createQueryBuilder('group')
       .leftJoinAndSelect('group.members', 'member', 'member.left_at IS NULL')
       .leftJoinAndSelect('member.user', 'user')
+      .leftJoinAndSelect('group.topic', 'topic')
       .where('group.id = :id', { id: groupId })
       .orderBy('member.joined_at', 'ASC')
       .getOne();
@@ -353,6 +440,7 @@ export class GroupsService {
       status: group.status,
       github_repo_url: group.github_repo_url,
       jira_project_key: group.jira_project_key,
+      topic: group.topic,
       members_count: members.length,
       created_by_id: group.created_by_id,
       created_at: group.created_at,

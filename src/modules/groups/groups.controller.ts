@@ -1,40 +1,41 @@
 import {
-  Controller,
-  Get,
-  Post,
-  Patch,
-  Delete,
   Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
   Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
   Query,
   Req,
   UseGuards,
-  HttpCode,
-  HttpStatus,
-  ParseUUIDPipe,
 } from '@nestjs/common';
 import {
-  ApiTags,
-  ApiOperation,
-  ApiResponse,
   ApiBearerAuth,
+  ApiOperation,
   ApiParam,
+  ApiResponse,
+  ApiTags,
 } from '@nestjs/swagger';
 import { Role } from '../../entities';
-import { GroupsService } from './groups.service';
-import { CreateGroupDto } from './dto/create-group.dto';
-import { UpdateGroupDto } from './dto/update-group.dto';
+import type { AuthorizedRequest } from '../auth/auth.controller';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
 import { AddMemberDto } from './dto/add-member.dto';
-import { UpdateMemberDto } from './dto/update-member.dto';
+import { CreateGroupDto } from './dto/create-group.dto';
 import { QueryGroupsDto } from './dto/query-groups.dto';
+import { UpdateGroupDto } from './dto/update-group.dto';
+import { UpdateMemberDto } from './dto/update-member.dto';
 import {
   GroupDetailEntity,
   GroupMemberEntity,
   PaginatedGroupsEntity,
 } from './entities/group.entity';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RolesGuard } from '../auth/guards/roles.guard';
-import { Roles } from '../auth/decorators/roles.decorator';
+import { GroupsService } from './groups.service';
 
 @ApiTags('Groups')
 @ApiBearerAuth()
@@ -48,8 +49,8 @@ export class GroupsController {
   @Post()
   @ApiOperation({ summary: 'Create a new group (caller becomes leader)' })
   @ApiResponse({ status: 201, type: GroupDetailEntity })
-  async create(@Req() req: any, @Body() dto: CreateGroupDto) {
-    return this.groupsService.create(req.user.id, dto);
+  async create(@Req() req: AuthorizedRequest, @Body() dto: CreateGroupDto) {
+    return await this.groupsService.create(req.user.id, dto);
   }
 
   @Get()
@@ -57,8 +58,36 @@ export class GroupsController {
     summary: 'List groups (students see own, lecturers/admins see all)',
   })
   @ApiResponse({ status: 200, type: PaginatedGroupsEntity })
-  async findAll(@Req() req: any, @Query() query: QueryGroupsDto) {
-    return this.groupsService.findAll(req.user.id, req.user.role, query);
+  async findAll(@Req() req: AuthorizedRequest, @Query() query: QueryGroupsDto) {
+    return await this.groupsService.findAll(
+      req.user.id,
+      req.user.role as Role,
+      query,
+    );
+  }
+
+  @Get('class/:classId')
+  @ApiOperation({ summary: 'Get all groups for a specific class' })
+  async getGroupsByClass(
+    @Req() req: AuthorizedRequest,
+    @Param('classId') classId: string,
+  ) {
+    return await this.groupsService.getGroupsByClass(
+      classId,
+      req.user.id,
+      req.user.role as Role,
+    );
+  }
+
+  @Post(':id/join')
+  @ApiOperation({
+    summary: 'Join an empty group (first to join becomes LEADER)',
+  })
+  async joinEmptyGroup(
+    @Req() req: AuthorizedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return await this.groupsService.joinEmptyGroup(id, req.user.id);
   }
 
   @Get(':id')
@@ -68,7 +97,7 @@ export class GroupsController {
   @ApiResponse({ status: 403, description: 'Not a member of this group' })
   @ApiResponse({ status: 404, description: 'Group not found' })
   async findOne(@Param('id', ParseUUIDPipe) id: string, @Req() req: any) {
-    return this.groupsService.findOne(id, req.user.id, req.user.role);
+    return this.groupsService.findOne(id, req.user.id, req.user.role as Role);
   }
 
   @Patch(':id')
@@ -82,7 +111,12 @@ export class GroupsController {
     @Req() req: any,
     @Body() dto: UpdateGroupDto,
   ) {
-    return this.groupsService.update(id, req.user.id, req.user.role, dto);
+    return this.groupsService.update(
+      id,
+      req.user.id,
+      req.user.role as Role,
+      dto,
+    );
   }
 
   @Delete(':id')
@@ -124,7 +158,12 @@ export class GroupsController {
     @Req() req: any,
     @Body() dto: AddMemberDto,
   ) {
-    return this.groupsService.addMember(id, dto, req.user.id, req.user.role);
+    return this.groupsService.addMember(
+      id,
+      dto,
+      req.user.id,
+      req.user.role as Role,
+    );
   }
 
   // Static "/me" route must come before parametric "/:userId" routes
@@ -160,7 +199,7 @@ export class GroupsController {
       userId,
       dto,
       req.user.id,
-      req.user.role,
+      req.user.role as Role,
     );
   }
 
@@ -185,7 +224,7 @@ export class GroupsController {
       id,
       userId,
       req.user.id,
-      req.user.role,
+      req.user.role as Role,
     );
   }
 }

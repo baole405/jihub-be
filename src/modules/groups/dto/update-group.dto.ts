@@ -1,6 +1,5 @@
-import { PartialType } from '@nestjs/swagger';
+import { ApiPropertyOptional, PartialType } from '@nestjs/swagger';
 import { IsEnum, IsOptional } from 'class-validator';
-import { ApiPropertyOptional } from '@nestjs/swagger';
 import { GroupStatus } from '../../../entities';
 import { CreateGroupDto } from './create-group.dto';
 
@@ -15,4 +14,10 @@ export class UpdateGroupDto extends PartialType(CreateGroupDto) {
   })
   @IsOptional()
   status?: GroupStatus;
+
+  @ApiPropertyOptional({
+    description: 'Topic UUID',
+  })
+  @IsOptional()
+  topic_id?: string;
 }
