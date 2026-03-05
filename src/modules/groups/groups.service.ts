@@ -615,4 +615,25 @@ export class GroupsService {
 
     await this.groupRepoRepository.delete({ id: repoId });
   }
+
+  async getGroupRepoCommits(groupId: string, repoId: string) {
+    const repo = await this.groupRepoRepository.findOne({
+      where: { id: repoId, group_id: groupId },
+    });
+
+    if (!repo) {
+      throw new NotFoundException('Group repository not found');
+    }
+
+    if (!repo.repo_owner || !repo.repo_name) {
+      throw new BadRequestException('Repository owner or name is missing');
+    }
+
+    // We use the token of the user who added the repository to view it
+    return this.githubService.getRepoCommits(
+      repo.added_by_id,
+      repo.repo_owner,
+      repo.repo_name,
+    );
+  }
 }

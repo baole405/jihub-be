@@ -260,4 +260,20 @@ export class GroupsController {
   ) {
     return this.groupsService.removeGroupRepo(id, repoId, req.user.id);
   }
+
+  @Get(':id/repos/:repoId/commits')
+  @Roles(Role.LECTURER, Role.STUDENT)
+  @ApiOperation({ summary: 'Get recent commits for a linked group repository' })
+  @ApiParam({ name: 'id', description: 'Group ID' })
+  @ApiParam({ name: 'repoId', description: 'GroupRepository ID' })
+  @ApiResponse({
+    status: 200,
+    description: 'List of recent commits',
+  })
+  async getGroupRepoCommits(
+    @Param('id') groupId: string,
+    @Param('repoId') repoId: string,
+  ) {
+    return this.groupsService.getGroupRepoCommits(groupId, repoId);
+  }
 }
