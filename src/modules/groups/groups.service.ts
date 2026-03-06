@@ -10,10 +10,14 @@ import { ERROR_MESSAGES } from '../../common/constants';
 import {
   Group,
   GroupMembership,
+  GroupRepository,
   MembershipRole,
   Role,
+  Topic,
   User,
 } from '../../entities';
+import { GithubService } from '../github/github.service';
+import { JiraService } from '../jira/jira.service';
 import { AddMemberDto } from './dto/add-member.dto';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { QueryGroupsDto } from './dto/query-groups.dto';
@@ -29,6 +33,12 @@ export class GroupsService {
     private readonly membershipRepository: Repository<GroupMembership>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(Topic)
+    private readonly topicRepository: Repository<Topic>,
+    @InjectRepository(GroupRepository)
+    private readonly groupRepoRepository: Repository<GroupRepository>,
+    private readonly githubService: GithubService,
+    private readonly jiraService: JiraService,
   ) {}
 
   async create(userId: string, dto: CreateGroupDto) {
@@ -147,6 +157,8 @@ export class GroupsService {
     const qb = this.groupRepository
       .createQueryBuilder('group')
       .leftJoinAndSelect('group.topic', 'topic')
+      .leftJoinAndSelect('group.members', 'member', 'member.left_at IS NULL')
+      .leftJoinAndSelect('member.user', 'user')
       .loadRelationCountAndMap(
         'group.members_count',
         'group.members',
@@ -165,6 +177,12 @@ export class GroupsService {
       topic: g.topic,
       members_count: g.members_count ?? 0,
       status: g.status,
+      members:
+        g.members?.map((m: any) => ({
+          user_id: m.user_id,
+          full_name: m.user?.full_name,
+          role: m.role_in_group,
+        })) || [],
     }));
   }
 
@@ -220,8 +238,64 @@ export class GroupsService {
     userRole: Role,
     dto: UpdateGroupDto,
   ) {
-    await this.assertGroupExists(groupId);
+    const group = await this.assertGroupExists(groupId);
     await this.assertCanManageGroup(groupId, userId, userRole);
+
+    let newGithubUrl = dto.github_repo_url;
+    let newJiraKey = dto.jira_project_key;
+
+    // Detect if a new topic is assigned, to trigger auto-provisioning
+    if (dto.topic_id && dto.topic_id !== group.topic_id) {
+      const topic = await this.topicRepository.findOne({
+        where: { id: dto.topic_id },
+      });
+      if (!topic) throw new NotFoundException('Topic not found');
+
+      try {
+        // Auto-provision Github Repo (Private)
+        const repoName =
+          `${topic.name.replace(/[^a-zA-Z0-9]/g, '-')}-${group.name.replace(/[^a-zA-Z0-9]/g, '-')}`.toLowerCase();
+        const githubData = await this.githubService.createRepository(
+          group.created_by_id,
+          repoName,
+          topic.description || '',
+        );
+        if (githubData && githubData.html_url) {
+          newGithubUrl = githubData.html_url;
+          // Also link it in project_links implicitly for AI tools
+          await this.jiraService.linkProject(
+            group.created_by_id,
+            githubData.full_name,
+            '',
+          ); // Just creating the skeleton
+        }
+
+        // Auto-provision Jira Project
+        const projectKey = repoName.substring(0, 8); // Keep it short
+        const jiraData = await this.jiraService.createProject(
+          group.created_by_id,
+          repoName,
+          projectKey,
+        );
+
+        if (jiraData && jiraData.id) {
+          // We expect the key to be returned, or we use the sent key
+          newJiraKey = jiraData.projectKey || projectKey;
+
+          if (githubData && githubData.full_name) {
+            await this.jiraService.linkProject(
+              group.created_by_id,
+              githubData.full_name,
+              jiraData.id.toString(),
+            );
+          }
+        }
+      } catch (e: any) {
+        console.warn('Auto-provisioning warning:', e.message);
+        // Continue even if provisioning partially fails, perhaps they haven't linked their accounts yet.
+        // Or we could throw an exception to force them to link, but let's be forgiving in MVP.
+      }
+    }
 
     await this.groupRepository.update(
       { id: groupId },
@@ -230,15 +304,15 @@ export class GroupsService {
         project_name: dto.project_name,
         description: dto.description,
         semester: dto.semester,
-        github_repo_url: dto.github_repo_url,
-        jira_project_key: dto.jira_project_key,
+        github_repo_url: newGithubUrl,
+        jira_project_key: newJiraKey,
         status: dto.status,
         topic_id: dto.topic_id,
       },
     );
 
-    const group = await this.findOneById(groupId);
-    return this.formatGroupDetail(group);
+    const updatedGroup = await this.findOneById(groupId);
+    return this.formatGroupDetail(updatedGroup);
   }
 
   async remove(groupId: string) {
@@ -486,5 +560,80 @@ export class GroupsService {
         ERROR_MESSAGES.GROUPS.ONLY_LEADERS_CAN_MANAGE,
       );
     }
+  }
+
+  // ── Repository management ──────────────────────────────
+
+  async getGroupRepos(groupId: string) {
+    return this.groupRepoRepository.find({
+      where: { group_id: groupId },
+      order: { created_at: 'ASC' },
+    });
+  }
+
+  async addGroupRepo(
+    groupId: string,
+    userId: string,
+    data: { repo_url: string; repo_name: string; repo_owner: string },
+  ) {
+    // Verify the group exists
+    const group = await this.groupRepository.findOne({
+      where: { id: groupId },
+    });
+    if (!group) {
+      throw new NotFoundException('Group not found');
+    }
+
+    // Check if repo already linked
+    const existing = await this.groupRepoRepository.findOne({
+      where: { group_id: groupId, repo_url: data.repo_url },
+    });
+    if (existing) {
+      throw new BadRequestException(
+        'This repository is already linked to this group',
+      );
+    }
+
+    const repo = this.groupRepoRepository.create({
+      group_id: groupId,
+      repo_url: data.repo_url,
+      repo_name: data.repo_name,
+      repo_owner: data.repo_owner,
+      added_by_id: userId,
+    });
+
+    return this.groupRepoRepository.save(repo);
+  }
+
+  async removeGroupRepo(groupId: string, repoId: string, userId: string) {
+    const repo = await this.groupRepoRepository.findOne({
+      where: { id: repoId, group_id: groupId },
+    });
+    if (!repo) {
+      throw new NotFoundException('Repository not found in this group');
+    }
+
+    await this.groupRepoRepository.delete({ id: repoId });
+  }
+
+  async getGroupRepoCommits(groupId: string, repoId: string) {
+    const repo = await this.groupRepoRepository.findOne({
+      where: { id: repoId, group_id: groupId },
+    });
+
+    if (!repo) {
+      throw new NotFoundException('Group repository not found');
+    }
+
+    if (!repo.repo_owner || !repo.repo_name) {
+      throw new BadRequestException('Repository owner or name is missing');
+    }
+
+    // We use the token of the user who added the repository to view it
+    return this.githubService.getRepoCommits(
+      repo.added_by_id,
+      repo.repo_owner,
+      repo.repo_name,
+    );
   }
 }

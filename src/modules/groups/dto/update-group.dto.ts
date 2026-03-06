@@ -20,4 +20,10 @@ export class UpdateGroupDto extends PartialType(CreateGroupDto) {
   })
   @IsOptional()
   topic_id?: string;
+
+  @ApiPropertyOptional({
+    description: 'GitHub repository URL to link to this group',
+  })
+  @IsOptional()
+  github_repo_url?: string;
 }

@@ -1,4 +1,12 @@
-import { Controller, Get, Param, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -25,6 +33,27 @@ export class GithubController {
   @ApiResponse({ status: 400, description: 'GitHub account is not linked' })
   async getRepos(@Req() req: AuthorizedRequest) {
     return this.githubService.getUserRepositories(req.user.id);
+  }
+
+  @Post('repos')
+  @ApiOperation({ summary: 'Create a new GitHub repository' })
+  @ApiResponse({
+    status: 201,
+    description: 'Repository created successfully',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'GitHub account is not linked or creation failed',
+  })
+  async createRepo(
+    @Req() req: AuthorizedRequest,
+    @Body() body: { name: string; description?: string },
+  ) {
+    return this.githubService.createRepository(
+      req.user.id,
+      body.name,
+      body.description || '',
+    );
   }
 
   @Get('repos/:owner/:repo/contributors-stats')

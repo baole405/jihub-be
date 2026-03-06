@@ -192,4 +192,65 @@ export class JiraService {
 
     return this.projectLinkRepository.save(newLink);
   }
+
+  async createProject(userId: string, projectName: string, projectKey: string) {
+    const token = await this.integrationTokenRepository.findOne({
+      where: { user_id: userId, provider: IntegrationProvider.JIRA },
+    });
+
+    if (!token || !token.access_token) {
+      throw new BadRequestException('Jira account is not linked for this user');
+    }
+
+    try {
+      const cloudId = await this.getJiraCloudId(token.access_token);
+
+      // Get user's account ID from Jira to assign as lead
+      const meResponse = await lastValueFrom(
+        this.httpService.get(
+          `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/myself`,
+          {
+            headers: {
+              Authorization: `Bearer ${token.access_token}`,
+              Accept: 'application/json',
+            },
+          },
+        ),
+      );
+      const leadAccountId = meResponse.data.accountId;
+
+      const response = await lastValueFrom(
+        this.httpService.post(
+          `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/project`,
+          {
+            key: projectKey.substring(0, 10).toUpperCase(), // Jira keys must be short and uppercase
+            name: projectName,
+            projectTypeKey: 'software',
+            projectTemplateKey:
+              'com.pyxis.greenhopper.jira:gh-simplified-kanban-classic',
+            description: 'Created automatically by the Group Management System',
+            leadAccountId: leadAccountId,
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${token.access_token}`,
+              Accept: 'application/json',
+              'Content-Type': 'application/json',
+            },
+          },
+        ),
+      );
+
+      return response.data;
+    } catch (error: any) {
+      console.error(
+        'Jira API error creating project:',
+        error?.response?.data || error.message,
+      );
+      throw new BadRequestException(
+        'Failed to create Jira project: ' +
+          (error?.response?.data?.errorMessages?.[0] || error.message),
+      );
+    }
+  }
 }

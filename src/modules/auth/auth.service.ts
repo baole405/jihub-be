@@ -280,6 +280,7 @@ export class AuthService {
     profile: OAuthProfile,
     accessToken: string,
     refreshToken?: string,
+    currentUserId?: string,
   ): Promise<User> {
     const existingIntegration = await this.findUserByOAuthProvider(
       provider,
@@ -287,6 +288,11 @@ export class AuthService {
     );
 
     if (existingIntegration) {
+      if (currentUserId && existingIntegration.user.id !== currentUserId) {
+        throw new BadRequestException(
+          `This ${provider} account is already linked to another user.`,
+        );
+      }
       await this.linkOAuthAccount(
         existingIntegration.user.id,
         provider,
@@ -295,6 +301,23 @@ export class AuthService {
         refreshToken,
       );
       return existingIntegration.user;
+    }
+
+    if (currentUserId) {
+      const existingUser = await this.userRepository.findOne({
+        where: { id: currentUserId },
+      });
+
+      if (existingUser) {
+        await this.linkOAuthAccount(
+          existingUser.id,
+          provider,
+          profile,
+          accessToken,
+          refreshToken,
+        );
+        return existingUser;
+      }
     }
 
     if (profile.email) {
@@ -359,7 +382,7 @@ export class AuthService {
 
   // ============ GitHub OAuth Manual Flow ============
 
-  async handleGitHubCallback(code: string) {
+  async handleGitHubCallback(code: string, currentUserId?: string) {
     const clientId = this.configService.get<string>('GH_CLIENT_ID');
     const clientSecret = this.configService.get<string>('GH_CLIENT_SECRET');
 
@@ -432,6 +455,7 @@ export class AuthService {
         oauthProfile,
         tokenData.access_token,
         tokenData.refresh_token,
+        currentUserId,
       );
 
       return user;
@@ -445,7 +469,7 @@ export class AuthService {
 
   // ============ Jira OAuth Manual Flow ============
 
-  async handleJiraCallback(code: string) {
+  async handleJiraCallback(code: string, currentUserId?: string) {
     const clientId = this.configService.get<string>('JIRA_CLIENT_ID');
     const clientSecret = this.configService.get<string>('JIRA_CLIENT_SECRET');
     const redirectUri = this.configService.get<string>('JIRA_CALLBACK_URL');
@@ -504,6 +528,7 @@ export class AuthService {
         oauthProfile,
         tokenData.access_token,
         tokenData.refresh_token,
+        currentUserId,
       );
 
       return user;

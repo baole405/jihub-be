@@ -27,7 +27,7 @@ import { UsersModule } from './modules/users/users.module';
         type: 'postgres' as const,
         url: configService.get<string>('DATABASE_URL'),
         autoLoadEntities: true,
-        synchronize: false,
+        synchronize: true, // TODO: set back to false for production
         logging: configService.get('NODE_ENV') === 'development',
       }),
     }),

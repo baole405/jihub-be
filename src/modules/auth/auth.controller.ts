@@ -139,6 +139,7 @@ export class AuthController {
   }
 
   @Get('github/callback')
+  @UseGuards(OptionalJwtAuthGuard)
   @ApiOperation({ summary: 'GitHub OAuth callback (internal use)' })
   @ApiResponse({
     status: 302,
@@ -147,6 +148,7 @@ export class AuthController {
   async githubCallback(
     @Query('code') code: string,
     @Query('state') state: string,
+    @Req() req: any,
     @Res() res: Response,
   ) {
     // Validate required parameters
@@ -165,7 +167,10 @@ export class AuthController {
     await this.redisService.deleteOAuthState(state);
 
     // Handle GitHub OAuth callback manually (exchange code for user)
-    const user = await this.authService.handleGitHubCallback(code);
+    const user = await this.authService.handleGitHubCallback(
+      code,
+      req.user?.id,
+    );
     const token = this.authService.generateJwtToken(user);
 
     // Set secure httpOnly cookie
@@ -222,6 +227,7 @@ export class AuthController {
   }
 
   @Get('jira/callback')
+  @UseGuards(OptionalJwtAuthGuard)
   @ApiOperation({ summary: 'Jira OAuth callback (internal use)' })
   @ApiResponse({
     status: 302,
@@ -230,6 +236,7 @@ export class AuthController {
   async jiraCallback(
     @Query('code') code: string,
     @Query('state') state: string,
+    @Req() req: any,
     @Res() res: Response,
   ) {
     if (!code || code.length === 0 || !state || state.length === 0) {
@@ -244,7 +251,7 @@ export class AuthController {
 
     await this.redisService.deleteOAuthState(state);
 
-    const user = await this.authService.handleJiraCallback(code);
+    const user = await this.authService.handleJiraCallback(code, req.user?.id);
     const token = this.authService.generateJwtToken(user);
 
     const isProduction =

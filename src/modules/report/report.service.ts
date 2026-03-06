@@ -6,6 +6,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import Groq from 'groq-sdk';
 import { Repository } from 'typeorm';
+import { MembershipRole } from '../../common/enums';
 import { Group } from '../../entities/group.entity';
 import { ProjectLink } from '../../entities/project-link.entity';
 import { GithubService } from '../github/github.service';
@@ -43,22 +44,34 @@ export class ReportService {
   ): Promise<{ markdown: string }> {
     const group = await this.groupRepository.findOne({
       where: { id: groupId },
+      relations: ['members', 'members.user'],
     });
     if (!group) throw new NotFoundException('Group not found');
 
-    const projectLink = await this.projectLinkRepository.findOne({
-      where: { user_id: group.created_by_id },
-    });
-    if (!projectLink || !projectLink.jira_project_id) {
+    if (!group.jira_project_key) {
       throw new BadRequestException(
-        'Group leader has not linked a Jira project yet',
+        'This group has not linked a Jira project yet',
       );
     }
 
+    const leader = group.members?.find(
+      (m) => m.role_in_group === MembershipRole.LEADER,
+    );
+    const jiraTokenUserId = leader
+      ? leader.user_id || leader.user?.id
+      : group.created_by_id;
+
+    console.log(
+      '[DEBUG generateSrs] Group Leader ID:',
+      leader?.user_id,
+      'Token User ID:',
+      jiraTokenUserId,
+    );
+
     // 1. Fetch raw data from Jira
     const rawJiraData = await this.jiraService.getProjectIssues(
-      group.created_by_id,
-      projectLink.jira_project_id,
+      jiraTokenUserId,
+      group.jira_project_key,
     );
 
     // 2. Synthesize input prompt
@@ -97,18 +110,29 @@ Return only the markdown document. Do not add conversational text around it.`;
     });
     if (!group) throw new NotFoundException('Group not found');
 
-    const projectLink = await this.projectLinkRepository.findOne({
-      where: { user_id: group.created_by_id },
-    });
-    if (!projectLink || !projectLink.jira_project_id) {
+    if (!group.jira_project_key) {
       throw new BadRequestException(
-        'Group leader has not linked a Jira project yet',
+        'This group has not linked a Jira project yet',
       );
     }
 
+    const leader = group.members?.find(
+      (m) => m.role_in_group === MembershipRole.LEADER,
+    );
+    const jiraTokenUserId = leader
+      ? leader.user_id || leader.user?.id
+      : group.created_by_id;
+
+    console.log(
+      '[DEBUG generateAssignmentReport] Group Leader ID:',
+      leader?.user_id,
+      'Token User ID:',
+      jiraTokenUserId,
+    );
+
     const rawJiraData = await this.jiraService.getProjectIssues(
-      group.created_by_id,
-      projectLink.jira_project_id,
+      jiraTokenUserId,
+      group.jira_project_key,
     );
 
     // Simplistic breakdown for frontend rendering
@@ -134,28 +158,45 @@ Return only the markdown document. Do not add conversational text around it.`;
     });
     if (!group) throw new NotFoundException('Group not found');
 
-    const projectLink = await this.projectLinkRepository.findOne({
-      where: { user_id: group.created_by_id },
-    });
-    if (!projectLink || !projectLink.github_repo_full_name) {
+    // To avoid circular dependency / too many modules in report, we can inject GroupRepository repository just for fetching linked repos.
+    // Wait, reportService constructor needs it. Let's just import it if needed.
+    // Wait, instead of modifying constructor to add groupRepoRepository, we can temporarily query the database via query builder
+    // or add `groupRepoRepository` to ReportService constructor.
+    // Actually, I'll just use queryBuilder on groupRepository to join GroupRepository.
+
+    const repos = await this.groupRepository.manager
+      .createQueryBuilder('GroupRepository', 'gr')
+      .where('gr.group_id = :groupId', { groupId })
+      .getMany();
+
+    if (!repos || repos.length === 0) {
       throw new BadRequestException(
-        'Group leader has not linked a Github repository yet',
+        'This group has not linked any Github repositories yet',
       );
     }
 
-    const [owner, repo] = projectLink.github_repo_full_name.split('/');
+    const allStats: any[] = [];
 
-    // Fetch directly from Github API wrapper
-    const stats = await this.githubService.getRepoContributorsStats(
-      group.created_by_id,
-      owner,
-      repo,
-    );
+    // Fetch stats for all linked repositories
+    for (const repo of repos) {
+      try {
+        const stats = await this.githubService.getRepoContributorsStats(
+          repo.added_by_id,
+          repo.repo_owner,
+          repo.repo_name,
+        );
+        allStats.push({
+          repository: `${repo.repo_owner}/${repo.repo_name}`,
+          contributors: stats,
+        });
+      } catch (e) {
+        // Skip failed ones quietly or log
+      }
+    }
 
     return {
       groupName: group.name,
-      repository: projectLink.github_repo_full_name,
-      contributors: stats,
+      repositories: allStats,
     };
   }
 }
