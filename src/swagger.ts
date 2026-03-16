@@ -5,18 +5,17 @@ export const getDocumentBuilder = () => {
     .setTitle('WDP301 API Documentation')
     .setDescription('Comprehensive API documentation for the WDP301 project')
     .setVersion('1.0.0')
-    .addBearerAuth()
-    .addServer(
+    .addBearerAuth();
+
+  const appPlatformUrl =
+    process.env.API_BASE_URL ?? 'https://jihub-toxzx.ondigitalocean.app';
+  builder.addServer(appPlatformUrl, 'Production (DigitalOcean App Platform)');
+
+  if (process.env.NODE_ENV !== 'production') {
+    builder.addServer(
       `http://localhost:${process.env.PORT ?? 3000}`,
       'Local development',
     );
-
-  // Add production server if FRONTEND_URL is set
-  if (process.env.FRONTEND_URL) {
-    const productionUrl = process.env.FRONTEND_URL.includes('localhost')
-      ? 'http://143.198.223.247:8080'
-      : 'http://143.198.223.247:8080';
-    builder.addServer(productionUrl, 'Production (DigitalOcean VPS)');
   }
 
   return builder.build();
