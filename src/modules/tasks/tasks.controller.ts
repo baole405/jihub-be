@@ -14,9 +14,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBody,
   ApiBearerAuth,
+  ApiExtraModels,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -32,6 +35,7 @@ import { TasksService } from './tasks.service';
 
 @ApiTags('Tasks')
 @ApiBearerAuth()
+@ApiExtraModels(TaskResponseEntity, PaginatedTasksEntity)
 @UseGuards(JwtAuthGuard)
 @Controller('tasks')
 export class TasksController {
@@ -41,6 +45,12 @@ export class TasksController {
   @ApiOperation({
     summary: 'List internal tasks for groups the caller has joined',
   })
+  @ApiQuery({ name: 'group_id', required: false, example: '11111111-1111-1111-1111-111111111111' })
+  @ApiQuery({ name: 'status', required: false, enum: ['TODO', 'IN_PROGRESS', 'DONE', 'BLOCKED'] })
+  @ApiQuery({ name: 'assignee_id', required: false, example: '22222222-2222-2222-2222-222222222222' })
+  @ApiQuery({ name: 'search', required: false, example: 'mobile' })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'limit', required: false, example: 20 })
   @ApiResponse({ status: 200, type: PaginatedTasksEntity })
   async findAll(@Req() req: AuthorizedRequest, @Query() query: QueryTasksDto) {
     return this.tasksService.findAll(req.user.id, query);
@@ -49,6 +59,23 @@ export class TasksController {
   @Post()
   @UseGuards(TaskWriteRateLimitGuard)
   @ApiOperation({ summary: 'Create internal task for a group' })
+  @ApiBody({
+    type: CreateTaskDto,
+    examples: {
+      leaderCreateTask: {
+        summary: 'Create a task for a joined group',
+        value: {
+          group_id: '11111111-1111-1111-1111-111111111111',
+          title: 'Prepare mobile task payload',
+          description: 'Align mobile task card with BE contract.',
+          status: 'TODO',
+          priority: 'HIGH',
+          assignee_id: '22222222-2222-2222-2222-222222222222',
+          due_at: '2026-03-25T10:00:00.000Z',
+        },
+      },
+    },
+  })
   @ApiResponse({ status: 201, type: TaskResponseEntity })
   @ApiResponse({ status: 400, description: 'Invalid payload' })
   @ApiResponse({ status: 403, description: 'Forbidden' })
@@ -61,6 +88,19 @@ export class TasksController {
   @UseGuards(TaskWriteRateLimitGuard)
   @ApiOperation({ summary: 'Update internal task' })
   @ApiParam({ name: 'id', description: 'Task UUID' })
+  @ApiBody({
+    type: UpdateTaskDto,
+    examples: {
+      updateStatusAndAssignee: {
+        summary: 'Move task and assign a member',
+        value: {
+          status: 'IN_PROGRESS',
+          priority: 'URGENT',
+          assignee_id: '22222222-2222-2222-2222-222222222222',
+        },
+      },
+    },
+  })
   @ApiResponse({ status: 200, type: TaskResponseEntity })
   @ApiResponse({ status: 400, description: 'Invalid payload' })
   @ApiResponse({ status: 403, description: 'Forbidden' })

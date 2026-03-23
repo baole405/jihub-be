@@ -31,7 +31,7 @@ import { UsersModule } from './modules/users/users.module';
         type: 'postgres' as const,
         url: configService.get<string>('DATABASE_URL'),
         autoLoadEntities: true,
-        synchronize: true, // TODO: set back to false for production
+        synchronize: configService.get('NODE_ENV') === 'development',
         logging: configService.get('NODE_ENV') === 'development',
       }),
     }),

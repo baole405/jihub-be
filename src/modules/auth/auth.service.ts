@@ -118,6 +118,31 @@ export class AuthService {
     private configService: ConfigService,
   ) {}
 
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+  }
+
+  private extractErrorPayload(error: unknown) {
+    if (!this.isRecord(error)) {
+      return undefined;
+    }
+
+    const response = error.response;
+    if (this.isRecord(response)) {
+      return response.data;
+    }
+
+    return undefined;
+  }
+
+  private extractErrorMessage(error: unknown) {
+    if (this.isRecord(error) && typeof error.message === 'string') {
+      return error.message;
+    }
+
+    return 'Unknown error';
+  }
+
   // ============ Email/Password Authentication ============
 
   async register(registerDto: RegisterDto): Promise<AuthResponse> {
@@ -273,6 +298,20 @@ export class AuthService {
     });
 
     return this.integrationTokenRepository.save(newLink);
+  }
+
+  private async updateIntegrationTokenMetadata(
+    userId: string,
+    provider: IntegrationProvider,
+    metadata: Partial<IntegrationToken>,
+  ) {
+    await this.integrationTokenRepository.update(
+      {
+        user_id: userId,
+        provider,
+      },
+      metadata,
+    );
   }
 
   async findOrCreateOAuthUser(
@@ -531,13 +570,25 @@ export class AuthService {
         currentUserId,
       );
 
+      await this.updateIntegrationTokenMetadata(
+        user.id,
+        IntegrationProvider.JIRA,
+        {
+          token_expires_at: tokenData.expires_in
+            ? new Date(Date.now() + tokenData.expires_in * 1000)
+            : null,
+          scope: tokenData.scope || null,
+          last_refreshed_at: new Date(),
+        },
+      );
+
       return user;
-    } catch (error: any) {
+    } catch (error: unknown) {
       const serviceName = this.constructor.name;
       const methodName = this.handleJiraCallback.name;
       console.error(
         `[${serviceName} - ${methodName}]`,
-        error?.response?.data || error.message,
+        this.extractErrorPayload(error) || this.extractErrorMessage(error),
       );
       throw new BadRequestException('Jira OAuth failed');
     }

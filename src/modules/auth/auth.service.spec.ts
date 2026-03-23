@@ -317,6 +317,67 @@ describe('AuthService', () => {
     });
   });
 
+  describe('handleJiraCallback', () => {
+    beforeEach(() => {
+      mockConfigService.get.mockImplementation((key: string) => {
+        if (key === 'JIRA_CLIENT_ID') return 'jira-client-id';
+        if (key === 'JIRA_CLIENT_SECRET') return 'jira-client-secret';
+        if (key === 'JIRA_CALLBACK_URL')
+          return 'https://jihub-toxzx.ondigitalocean.app/api/auth/jira/callback';
+        return undefined;
+      });
+    });
+
+    it('stores Jira token expiry metadata after OAuth callback succeeds', async () => {
+      const spyPost = jest.spyOn(mockHttpService.axiosRef, 'post');
+      const spyGet = jest.spyOn(mockHttpService.axiosRef, 'get');
+      const mockUser = {
+        id: 'user-jira-123',
+        email: 'jira@mail.test',
+        full_name: 'Jira User',
+        student_id: null,
+        role: 'USER',
+        created_at: new Date(),
+      };
+
+      (spyPost as jest.Mock).mockResolvedValue({
+        data: {
+          access_token: 'jira-access-token',
+          refresh_token: 'jira-refresh-token',
+          expires_in: 3600,
+          scope: 'read:jira-work offline_access',
+        },
+      });
+
+      (spyGet as jest.Mock).mockResolvedValue({
+        data: {
+          account_id: 'jira-account-1',
+          name: 'Jira User',
+          email: 'jira@mail.test',
+          picture: 'https://example.com/avatar.png',
+        },
+      });
+
+      jest
+        .spyOn(service, 'findOrCreateOAuthUser')
+        .mockResolvedValue(mockUser as User);
+
+      await service.handleJiraCallback('jira-code');
+
+      expect(mockIntegrationTokenRepository.update).toHaveBeenCalledWith(
+        {
+          user_id: mockUser.id,
+          provider: IntegrationProvider.JIRA,
+        },
+        expect.objectContaining({
+          scope: 'read:jira-work offline_access',
+          token_expires_at: expect.any(Date),
+          last_refreshed_at: expect.any(Date),
+        }),
+      );
+    });
+  });
+
   describe('unlinkOAuthAccount', () => {
     it('should unlink an OAuth account successfully', async () => {
       const userId = 'user-123';

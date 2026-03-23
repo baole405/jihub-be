@@ -1,14 +1,56 @@
 import { HttpService } from '@nestjs/axios';
-import { Injectable, HttpStatus, Logger } from '@nestjs/common';
+import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { lastValueFrom } from 'rxjs';
 import { Repository } from 'typeorm';
+import { createIntegrationException } from '../../common/errors/integration-error';
 import {
   IntegrationProvider,
   IntegrationToken,
   ProjectLink,
 } from '../../entities';
-import { createIntegrationException } from '../../common/errors/integration-error';
+
+const JIRA_REFRESH_SKEW_MS = 60_000;
+
+interface JiraAccessibleResource {
+  id: string;
+  scopes: string[];
+}
+
+interface JiraTokenRefreshResponse {
+  access_token: string;
+  expires_in?: number;
+  scope?: string;
+  refresh_token?: string;
+}
+
+interface JiraMyselfResponse {
+  accountId: string;
+}
+
+interface JiraIssueSearchItem {
+  key: string;
+  fields?: {
+    summary?: string;
+    status?: {
+      name?: string;
+    };
+    assignee?: unknown;
+    issuetype?: {
+      name?: string;
+    };
+  };
+}
+
+interface JiraIssueSearchResponse {
+  issues?: JiraIssueSearchItem[];
+}
+
+interface JiraCreatedProjectResponse extends Record<string, unknown> {
+  id?: string | number;
+  projectKey?: string;
+}
 
 export interface JiraProject {
   id: string;
@@ -36,7 +78,49 @@ export class JiraService {
     @InjectRepository(ProjectLink)
     private readonly projectLinkRepository: Repository<ProjectLink>,
     private readonly httpService: HttpService,
+    private readonly configService: ConfigService,
   ) {}
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+  }
+
+  private getResponseObject(error: unknown) {
+    if (!this.isRecord(error)) {
+      return undefined;
+    }
+
+    const response = error.response;
+    return this.isRecord(response) ? response : undefined;
+  }
+
+  private extractProviderMessage(error: unknown, fallbackMessage: string) {
+    const response = this.getResponseObject(error);
+    const data = this.isRecord(response?.data) ? response?.data : undefined;
+
+    const errorMessages = data?.errorMessages;
+    if (Array.isArray(errorMessages) && typeof errorMessages[0] === 'string') {
+      return errorMessages[0];
+    }
+
+    if (typeof data?.message === 'string') {
+      return data.message;
+    }
+
+    if (typeof data?.error_description === 'string') {
+      return data.error_description;
+    }
+
+    if (this.isRecord(data) && typeof data.error === 'string') {
+      return data.error;
+    }
+
+    if (this.isRecord(error) && typeof error.message === 'string') {
+      return error.message;
+    }
+
+    return fallbackMessage;
+  }
 
   private async getRequiredToken(userId: string) {
     const token = await this.integrationTokenRepository.findOne({
@@ -55,12 +139,66 @@ export class JiraService {
     return token;
   }
 
-  private async mapJiraError(
-    error: any,
+  private isUnauthorized(error: unknown) {
+    return this.getStatusCode(error) === 401;
+  }
+
+  private getStatusCode(error: unknown): number | undefined {
+    if (error instanceof HttpException) {
+      return error.getStatus();
+    }
+
+    const response = this.getResponseObject(error);
+    if (typeof response?.status === 'number') {
+      return response.status;
+    }
+
+    if (this.isRecord(error) && typeof error.getStatus === 'function') {
+      const getStatus = error.getStatus as () => unknown;
+      const status = getStatus();
+      return typeof status === 'number' ? status : undefined;
+    }
+
+    return undefined;
+  }
+
+  private shouldProactivelyRefresh(token: IntegrationToken) {
+    return (
+      !!token.refresh_token &&
+      !!token.token_expires_at &&
+      token.token_expires_at.getTime() <= Date.now() + JIRA_REFRESH_SKEW_MS
+    );
+  }
+
+  private mapReconnectRequired(userId: string, reason: string): never {
+    this.logger.warn(
+      JSON.stringify({
+        event: 'jira_reconnect_required',
+        user_id: userId,
+        hint: 'relink_jira_account',
+        reason,
+      }),
+    );
+
+    throw createIntegrationException(HttpStatus.UNAUTHORIZED, {
+      code: 'TOKEN_EXPIRED',
+      provider: IntegrationProvider.JIRA,
+      message:
+        'Jira access token expired or could not be refreshed. Please reconnect Jira.',
+      reconnectRequired: true,
+    });
+  }
+
+  private mapJiraError(
+    error: unknown,
     userId: string,
     fallbackMessage: string,
-  ): Promise<never> {
-    const status = error?.response?.status;
+  ): never {
+    if (error instanceof HttpException) {
+      throw error;
+    }
+
+    const status = this.getStatusCode(error);
 
     if (status === 401) {
       this.logger.warn(
@@ -70,10 +208,6 @@ export class JiraService {
           hint: 'relink_jira_account',
         }),
       );
-      await this.integrationTokenRepository.delete({
-        user_id: userId,
-        provider: IntegrationProvider.JIRA,
-      });
       throw createIntegrationException(HttpStatus.UNAUTHORIZED, {
         code: 'TOKEN_EXPIRED',
         provider: IntegrationProvider.JIRA,
@@ -123,129 +257,259 @@ export class JiraService {
       provider: IntegrationProvider.JIRA,
       message: fallbackMessage,
       details: {
-        providerMessage:
-          error?.response?.data?.errorMessages?.[0] ||
-          error?.response?.data?.message ||
-          error?.message ||
-          fallbackMessage,
+        providerMessage: this.extractProviderMessage(error, fallbackMessage),
       },
     });
   }
 
-  async getJiraCloudId(accessToken: string): Promise<string> {
+  private async refreshAccessToken(
+    userId: string,
+    token: IntegrationToken,
+  ): Promise<IntegrationToken | null> {
+    if (!token.refresh_token) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'jira_refresh_token_missing',
+          user_id: userId,
+          hint: 'relink_jira_account',
+        }),
+      );
+      return null;
+    }
+
+    const clientId = this.configService.get<string>('JIRA_CLIENT_ID');
+    const clientSecret = this.configService.get<string>('JIRA_CLIENT_SECRET');
+
+    if (!clientId || !clientSecret) {
+      this.logger.error(
+        JSON.stringify({
+          event: 'jira_refresh_not_configured',
+          user_id: userId,
+        }),
+      );
+      return null;
+    }
+
     try {
-      const response = await lastValueFrom(
-        this.httpService.get(
-          'https://api.atlassian.com/oauth/token/accessible-resources',
+      const response =
+        await this.httpService.axiosRef.post<JiraTokenRefreshResponse>(
+          'https://auth.atlassian.com/oauth/token',
+          {
+            grant_type: 'refresh_token',
+            client_id: clientId,
+            client_secret: clientSecret,
+            refresh_token: token.refresh_token,
+          },
           {
             headers: {
-              Authorization: `Bearer ${accessToken}`,
+              'Content-Type': 'application/json',
               Accept: 'application/json',
             },
           },
-        ),
-      );
+        );
 
-      const resources = response.data;
-      if (!resources || resources.length === 0) {
-        throw new Error('No accessible Jira resources found for this token.');
+      const refreshed = response.data;
+      if (!refreshed?.access_token) {
+        return null;
       }
 
-      // Typically you take the first one or allow user to select.
-      // We will select the first available jira resource.
-      const jiraResource = resources.find(
-        (r: any) =>
-          r.scopes.includes('read:jira-work') ||
-          r.scopes.includes('read:jira-user'),
+      const nextTokenState = {
+        access_token: refreshed.access_token,
+        refresh_token: refreshed.refresh_token ?? token.refresh_token,
+        token_expires_at: refreshed.expires_in
+          ? new Date(Date.now() + refreshed.expires_in * 1000)
+          : token.token_expires_at,
+        scope: refreshed.scope ?? token.scope,
+        last_refreshed_at: new Date(),
+      };
+
+      await this.integrationTokenRepository.update(
+        { id: token.id },
+        nextTokenState,
       );
 
-      if (!jiraResource && resources.length > 0) {
-        // If none specifically have the scope array we expect, just use the first id.
-        return resources[0].id;
-      }
-      return jiraResource ? jiraResource.id : resources[0].id;
-    } catch (error: any) {
-      console.error('Failed to get Jira Cloud ID:', error.message);
-      throw createIntegrationException(HttpStatus.BAD_REQUEST, {
-        code: 'VALIDATION_ERROR',
+      this.logger.log(
+        JSON.stringify({
+          event: 'jira_token_refreshed',
+          user_id: userId,
+        }),
+      );
+
+      return {
+        ...token,
+        ...nextTokenState,
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'jira_token_refresh_failed',
+          user_id: userId,
+          hint: 'relink_jira_account',
+          status: this.getStatusCode(error) ?? null,
+          message: this.extractProviderMessage(
+            error,
+            'Failed to refresh Jira token',
+          ),
+        }),
+      );
+      return null;
+    }
+  }
+
+  private async ensureFreshToken(userId: string, token: IntegrationToken) {
+    if (!this.shouldProactivelyRefresh(token)) {
+      return token;
+    }
+
+    const refreshed = await this.refreshAccessToken(userId, token);
+    if (!refreshed) {
+      return this.mapReconnectRequired(
+        userId,
+        'refresh_failed_before_request_execution',
+      );
+    }
+
+    return refreshed;
+  }
+
+  private selectPreferredResource(resources: JiraAccessibleResource[]) {
+    const preferred = resources.find(
+      (resource) =>
+        resource.scopes?.includes('read:jira-work') ||
+        resource.scopes?.includes('read:jira-user'),
+    );
+
+    return preferred ?? resources[0];
+  }
+
+  private async resolveCloudId(accessToken: string) {
+    const response = await this.httpService.axiosRef.get<
+      JiraAccessibleResource[]
+    >('https://api.atlassian.com/oauth/token/accessible-resources', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+    });
+
+    const resources = response.data;
+    if (!resources?.length) {
+      throw createIntegrationException(HttpStatus.NOT_FOUND, {
+        code: 'NOT_FOUND',
         provider: IntegrationProvider.JIRA,
-        message: 'Could not connect to Atlassian to resolve Jira site ID.',
-        details: {
-          providerMessage: error?.response?.data?.message || error?.message,
-        },
+        message: 'No accessible Jira site was found for the current account.',
+        reconnectRequired: true,
       });
+    }
+
+    return this.selectPreferredResource(resources).id;
+  }
+
+  private async executeWithJiraContext<T>(
+    userId: string,
+    fallbackMessage: string,
+    executor: (ctx: { accessToken: string; cloudId: string }) => Promise<T>,
+  ): Promise<T> {
+    const initialToken = await this.ensureFreshToken(
+      userId,
+      await this.getRequiredToken(userId),
+    );
+
+    return this.executeWithResolvedContext(
+      userId,
+      initialToken,
+      fallbackMessage,
+      executor,
+      false,
+    );
+  }
+
+  private async executeWithResolvedContext<T>(
+    userId: string,
+    token: IntegrationToken,
+    fallbackMessage: string,
+    executor: (ctx: { accessToken: string; cloudId: string }) => Promise<T>,
+    hasRetried: boolean,
+  ): Promise<T> {
+    try {
+      const cloudId = await this.resolveCloudId(token.access_token);
+      return await executor({ accessToken: token.access_token, cloudId });
+    } catch (error: unknown) {
+      if (this.isUnauthorized(error) && !hasRetried) {
+        const refreshed = await this.refreshAccessToken(userId, token);
+        if (!refreshed) {
+          return this.mapReconnectRequired(userId, 'refresh_failed_after_401');
+        }
+
+        return this.executeWithResolvedContext(
+          userId,
+          refreshed,
+          fallbackMessage,
+          executor,
+          true,
+        );
+      }
+
+      return this.mapJiraError(error, userId, fallbackMessage);
     }
   }
 
   async getProjects(userId: string): Promise<JiraProject[]> {
-    const token = await this.getRequiredToken(userId);
-
-    try {
-      // 1. Get the Cloud ID for the user's Atlassian site
-      const cloudId = await this.getJiraCloudId(token.access_token);
-
-      // 2. Fetch the projects for that site
-      const response = await lastValueFrom(
-        this.httpService.get<{ values: JiraProject[] }>(
-          `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/project/search`,
-          {
-            headers: {
-              Authorization: `Bearer ${token.access_token}`,
-              Accept: 'application/json',
+    return this.executeWithJiraContext(
+      userId,
+      'Failed to fetch Jira projects.',
+      async ({ accessToken, cloudId }) => {
+        const response = await lastValueFrom(
+          this.httpService.get<{ values: JiraProject[] }>(
+            `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/project/search`,
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: 'application/json',
+              },
+              params: {
+                maxResults: 50,
+              },
             },
-            params: {
-              maxResults: 50,
-            },
-          },
-        ),
-      );
+          ),
+        );
 
-      return response.data.values || [];
-    } catch (error: any) {
-      console.error('Jira API error fetching projects:', error.message);
-      return this.mapJiraError(error, userId, 'Failed to fetch Jira projects.');
-    }
+        return response.data.values || [];
+      },
+    );
   }
 
   async getProjectIssues(userId: string, projectId: string): Promise<any[]> {
-    const token = await this.getRequiredToken(userId);
-
-    try {
-      const cloudId = await this.getJiraCloudId(token.access_token);
-
-      // Perform a JQL search to pull issues belonging to this project
-      const response = await lastValueFrom(
-        this.httpService.get(
-          `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/search`,
-          {
-            headers: {
-              Authorization: `Bearer ${token.access_token}`,
-              Accept: 'application/json',
+    return this.executeWithJiraContext(
+      userId,
+      `Failed to fetch Jira issues for project ${projectId}.`,
+      async ({ accessToken, cloudId }) => {
+        const response = await lastValueFrom(
+          this.httpService.get<JiraIssueSearchResponse>(
+            `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/search`,
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: 'application/json',
+              },
+              params: {
+                jql: `project = "${projectId}"`,
+                maxResults: 100,
+              },
             },
-            params: {
-              jql: `project = "${projectId}"`,
-              maxResults: 100,
-            },
-          },
-        ),
-      );
+          ),
+        );
 
-      const issues = response.data.issues || [];
-      return issues.map((issue: any) => ({
-        key: issue.key,
-        summary: issue.fields?.summary,
-        status: issue.fields?.status?.name,
-        assignee: issue.fields?.assignee,
-        issueType: issue.fields?.issuetype?.name,
-      }));
-    } catch (error: any) {
-      console.error('Jira API error fetching project issues:', error.message);
-      return this.mapJiraError(
-        error,
-        userId,
-        `Failed to fetch Jira issues for project ${projectId}.`,
-      );
-    }
+        const issues = response.data.issues || [];
+        return issues.map((issue) => ({
+          key: issue.key,
+          summary: issue.fields?.summary,
+          status: issue.fields?.status?.name,
+          assignee: issue.fields?.assignee,
+          issueType: issue.fields?.issuetype?.name,
+        }));
+      },
+    );
   }
 
   async linkProject(
@@ -253,7 +517,6 @@ export class JiraService {
     githubRepoFullName: string,
     jiraProjectId: string,
   ) {
-    // Check if the link already exists
     const existingLink = await this.projectLinkRepository.findOne({
       where: {
         user_id: userId,
@@ -262,13 +525,11 @@ export class JiraService {
     });
 
     if (existingLink) {
-      // Update existing link
       existingLink.jira_project_id = jiraProjectId;
       await this.projectLinkRepository.save(existingLink);
       return existingLink;
     }
 
-    // Create new link
     const newLink = this.projectLinkRepository.create({
       user_id: userId,
       github_repo_full_name: githubRepoFullName,
@@ -278,86 +539,75 @@ export class JiraService {
     return this.projectLinkRepository.save(newLink);
   }
 
-  async createProject(userId: string, projectName: string, projectKey: string) {
-    const token = await this.getRequiredToken(userId);
-
-    try {
-      const cloudId = await this.getJiraCloudId(token.access_token);
-
-      // Get user's account ID from Jira to assign as lead
-      const meResponse = await lastValueFrom(
-        this.httpService.get(
-          `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/myself`,
-          {
-            headers: {
-              Authorization: `Bearer ${token.access_token}`,
-              Accept: 'application/json',
+  async createProject(
+    userId: string,
+    projectName: string,
+    projectKey: string,
+  ): Promise<JiraCreatedProjectResponse> {
+    return this.executeWithJiraContext(
+      userId,
+      'Failed to create Jira project.',
+      async ({ accessToken, cloudId }) => {
+        const meResponse = await lastValueFrom(
+          this.httpService.get<JiraMyselfResponse>(
+            `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/myself`,
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: 'application/json',
+              },
             },
-          },
-        ),
-      );
-      const leadAccountId = meResponse.data.accountId;
+          ),
+        );
+        const leadAccountId = meResponse.data.accountId;
 
-      const response = await lastValueFrom(
-        this.httpService.post(
-          `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/project`,
-          {
-            key: projectKey.substring(0, 10).toUpperCase(), // Jira keys must be short and uppercase
-            name: projectName,
-            projectTypeKey: 'software',
-            projectTemplateKey:
-              'com.pyxis.greenhopper.jira:gh-simplified-kanban-classic',
-            description: 'Created automatically by the Group Management System',
-            leadAccountId: leadAccountId,
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${token.access_token}`,
-              Accept: 'application/json',
-              'Content-Type': 'application/json',
+        const response = await lastValueFrom(
+          this.httpService.post<JiraCreatedProjectResponse>(
+            `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/project`,
+            {
+              key: projectKey.substring(0, 10).toUpperCase(),
+              name: projectName,
+              projectTypeKey: 'software',
+              projectTemplateKey:
+                'com.pyxis.greenhopper.jira:gh-simplified-kanban-classic',
+              description:
+                'Created automatically by the Group Management System',
+              leadAccountId,
             },
-          },
-        ),
-      );
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+              },
+            },
+          ),
+        );
 
-      return response.data;
-    } catch (error: any) {
-      console.error(
-        'Jira API error creating project:',
-        error?.response?.data || error.message,
-      );
-      return this.mapJiraError(error, userId, 'Failed to create Jira project.');
-    }
+        return response.data;
+      },
+    );
   }
 
   async validateProjectAccess(userId: string, projectKey: string) {
-    const token = await this.getRequiredToken(userId);
-
-    try {
-      const cloudId = await this.getJiraCloudId(token.access_token);
-      const response = await lastValueFrom(
-        this.httpService.get<JiraProject>(
-          `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/project/${encodeURIComponent(projectKey)}`,
-          {
-            headers: {
-              Authorization: `Bearer ${token.access_token}`,
-              Accept: 'application/json',
+    return this.executeWithJiraContext(
+      userId,
+      `Failed to validate Jira project key ${projectKey}.`,
+      async ({ accessToken, cloudId }) => {
+        const response = await lastValueFrom(
+          this.httpService.get<JiraProject>(
+            `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/project/${encodeURIComponent(projectKey)}`,
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: 'application/json',
+              },
             },
-          },
-        ),
-      );
+          ),
+        );
 
-      return response.data;
-    } catch (error: any) {
-      console.error(
-        `Jira API error validating project key ${projectKey}:`,
-        error?.response?.data || error.message,
-      );
-      return this.mapJiraError(
-        error,
-        userId,
-        `Failed to validate Jira project key ${projectKey}.`,
-      );
-    }
+        return response.data;
+      },
+    );
   }
 }
