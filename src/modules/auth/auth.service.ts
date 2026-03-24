@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
+import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import * as bcrypt from 'bcrypt';
 import { Repository } from 'typeorm';
 import { ERROR_MESSAGES, SUCCESS_MESSAGES } from '../../common/constants';
@@ -303,7 +304,7 @@ export class AuthService {
   private async updateIntegrationTokenMetadata(
     userId: string,
     provider: IntegrationProvider,
-    metadata: Partial<IntegrationToken>,
+    metadata: QueryDeepPartialEntity<IntegrationToken>,
   ) {
     await this.integrationTokenRepository.update(
       {

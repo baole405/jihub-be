@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { SemesterStatus } from '../common/enums/semester-status.enum';
+import { GroupReview } from './group-review.entity';
 import { ImportBatch } from './import-batch.entity';
 import { SemesterWeekAuditLog } from './semester-week-audit-log.entity';
 
@@ -48,4 +49,7 @@ export class Semester {
 
   @OneToMany(() => SemesterWeekAuditLog, (audit) => audit.semester)
   week_change_audits: SemesterWeekAuditLog[];
+
+  @OneToMany(() => GroupReview, (review) => review.semester)
+  group_reviews: GroupReview[];
 }

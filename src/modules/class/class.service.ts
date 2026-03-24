@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 import { In, Repository } from 'typeorm';
+import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
 import { DocumentStatus } from '../../common/enums';
 import { ERROR_MESSAGES } from '../../common/constants';
 import { ClassMembership } from '../../entities/class-membership.entity';
@@ -62,7 +63,7 @@ export class ClassService {
     const savedClass = await this.classRepo.save(newClass);
 
     // 3. Auto-generate 7 Empty Groups
-    const groupsToCreate: Partial<Group>[] = [];
+    const groupsToCreate: QueryDeepPartialEntity<Group>[] = [];
     for (let i = 1; i <= 7; i++) {
       groupsToCreate.push({
         name: `Group ${i}`,

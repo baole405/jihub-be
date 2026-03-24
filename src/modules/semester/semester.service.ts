@@ -11,24 +11,43 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 import { In, IsNull, Repository } from 'typeorm';
-import { AuthProvider, Role, SemesterStatus } from '../../common/enums';
+import {
+  AuthProvider,
+  ReviewMilestoneCode,
+  Role,
+  SemesterStatus,
+  TaskStatus,
+} from '../../common/enums';
 import {
   Class,
   ClassMembership,
   Group,
   GroupMembership,
+  GroupRepository,
+  GroupReview,
   ImportBatch,
   ImportRowLog,
   Semester,
   SemesterWeekAuditLog,
+  Task,
   User,
 } from '../../entities';
+import { GithubService } from '../github/github.service';
 import { CreateSemesterDto } from './dto/create-semester.dto';
 import { UpdateSemesterDto } from './dto/update-semester.dto';
+import { UpsertGroupReviewDto } from './dto/upsert-group-review.dto';
 import { SemesterImportRow } from './utils/semester-import.util';
 
 type ImportMode = 'VALIDATE' | 'IMPORT';
 type WeekGateStatus = 'PASS' | 'FAIL';
+type ReviewMilestoneStatus = 'PENDING' | 'REVIEWED';
+
+export interface ReviewMilestoneContext {
+  code: ReviewMilestoneCode;
+  label: string;
+  week_start: number;
+  week_end: number;
+}
 
 export interface SerializedSemester {
   id: string;
@@ -60,10 +79,17 @@ export class SemesterService {
     private readonly groupRepository: Repository<Group>,
     @InjectRepository(GroupMembership)
     private readonly groupMembershipRepository: Repository<GroupMembership>,
+    @InjectRepository(GroupRepository)
+    private readonly groupRepositoryLinkRepository: Repository<GroupRepository>,
+    @InjectRepository(GroupReview)
+    private readonly groupReviewRepository: Repository<GroupReview>,
+    @InjectRepository(Task)
+    private readonly taskRepository: Repository<Task>,
     @InjectRepository(SemesterWeekAuditLog)
     private readonly semesterWeekAuditLogRepository: Repository<SemesterWeekAuditLog>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly githubService: GithubService,
   ) {}
 
   async createSemester(dto: CreateSemesterDto) {
@@ -130,6 +156,22 @@ export class SemesterService {
     return {
       semester: this.serializeSemester(semester),
       can_override_week: false,
+    };
+  }
+
+  async getCurrentReviewMilestone() {
+    const semester = await this.getCurrentSemester();
+
+    if (!semester) {
+      return {
+        semester: null,
+        milestone: null,
+      };
+    }
+
+    return {
+      semester: this.serializeSemester(semester),
+      milestone: this.resolveReviewMilestone(semester.current_week),
     };
   }
 
@@ -484,6 +526,250 @@ export class SemesterService {
       semester: this.serializeSemester(semester),
       warnings,
       classes: classSummaries,
+    };
+  }
+
+  async getLecturerReviewSummary(
+    userId: string,
+    userRole: Role,
+    classId?: string,
+  ) {
+    const semester = await this.getCurrentSemester();
+
+    if (!semester) {
+      return {
+        semester: null,
+        milestone: null,
+        summary: {
+          classes_total: 0,
+          groups_total: 0,
+          reviewed_groups: 0,
+          groups_missing_task_evidence: 0,
+          groups_missing_commit_evidence: 0,
+        },
+        classes: [],
+      };
+    }
+
+    const milestone = this.resolveReviewMilestone(semester.current_week);
+    const classWhere =
+      userRole === Role.ADMIN
+        ? { semester: semester.code }
+        : { semester: semester.code, lecturer_id: userId };
+
+    const classes = await this.classRepository.find({
+      where: classWhere,
+      order: { code: 'ASC' },
+    });
+
+    const visibleClasses = classId
+      ? classes.filter((targetClass) => targetClass.id === classId)
+      : classes;
+
+    if (classId && visibleClasses.length === 0) {
+      throw new NotFoundException('Class not found for current semester.');
+    }
+
+    const groups =
+      visibleClasses.length > 0
+        ? await this.groupRepository.find({
+            where: {
+              class_id: In(visibleClasses.map((targetClass) => targetClass.id)),
+            },
+            relations: ['topic'],
+            order: { created_at: 'ASC' },
+          })
+        : [];
+
+    const reviewMap = await this.getReviewMapForGroups(
+      semester.id,
+      milestone,
+      groups.map((group) => group.id),
+    );
+
+    const classSummaries = visibleClasses.map((targetClass) => ({
+      class_id: targetClass.id,
+      class_code: targetClass.code,
+      class_name: targetClass.name,
+      groups: groups
+        .filter((group) => group.class_id === targetClass.id)
+        .map((group) =>
+          this.serializeReviewGroup(group, reviewMap.get(group.id), milestone),
+        ),
+    }));
+
+    return {
+      semester: this.serializeSemester(semester),
+      milestone,
+      summary: {
+        classes_total: classSummaries.length,
+        groups_total: classSummaries.reduce(
+          (sum, item) => sum + item.groups.length,
+          0,
+        ),
+        reviewed_groups: classSummaries.reduce(
+          (sum, item) =>
+            sum +
+            item.groups.filter((group) => group.review_status === 'REVIEWED')
+              .length,
+          0,
+        ),
+        groups_missing_task_evidence: classSummaries.reduce(
+          (sum, item) =>
+            sum +
+            item.groups.filter((group) =>
+              group.warnings.includes('NO_TASK_EVIDENCE'),
+            ).length,
+          0,
+        ),
+        groups_missing_commit_evidence: classSummaries.reduce(
+          (sum, item) =>
+            sum +
+            item.groups.filter((group) =>
+              group.warnings.includes('NO_COMMIT_EVIDENCE'),
+            ).length,
+          0,
+        ),
+      },
+      classes: classSummaries,
+    };
+  }
+
+  async upsertCurrentGroupReview(
+    groupId: string,
+    userId: string,
+    userRole: Role,
+    dto: UpsertGroupReviewDto,
+  ) {
+    const semester = await this.getCurrentSemester();
+
+    if (!semester) {
+      throw new NotFoundException('No current semester is configured.');
+    }
+
+    const milestone = this.resolveReviewMilestone(semester.current_week);
+    if (!milestone) {
+      throw new BadRequestException(
+        'No active review milestone is available for the current week.',
+      );
+    }
+
+    const group = await this.groupRepository.findOne({
+      where: { id: groupId },
+      relations: ['class', 'topic'],
+    });
+
+    if (!group) {
+      throw new NotFoundException('Group not found.');
+    }
+
+    if (
+      userRole !== Role.ADMIN &&
+      (!group.class || group.class.lecturer_id !== userId)
+    ) {
+      throw new ForbiddenException(
+        'You are not allowed to update review data for this group.',
+      );
+    }
+
+    const snapshot = await this.captureReviewSnapshot(group);
+    const existingReview = await this.groupReviewRepository.findOne({
+      where: {
+        semester_id: semester.id,
+        group_id: group.id,
+        milestone_code: milestone.code,
+      },
+    });
+
+    const review = this.groupReviewRepository.create({
+      id: existingReview?.id,
+      semester_id: semester.id,
+      group_id: group.id,
+      milestone_code: milestone.code,
+      week_start: milestone.week_start,
+      week_end: milestone.week_end,
+      task_progress_score:
+        dto.task_progress_score ?? existingReview?.task_progress_score ?? null,
+      commit_contribution_score:
+        dto.commit_contribution_score ??
+        existingReview?.commit_contribution_score ??
+        null,
+      review_milestone_score:
+        dto.review_milestone_score ??
+        existingReview?.review_milestone_score ??
+        null,
+      lecturer_note:
+        dto.lecturer_note ?? existingReview?.lecturer_note ?? null,
+      snapshot_task_total: snapshot.task_total,
+      snapshot_task_done: snapshot.task_done,
+      snapshot_commit_total: snapshot.commit_total,
+      snapshot_commit_contributors: snapshot.commit_contributors,
+      snapshot_repository: snapshot.repository,
+      snapshot_captured_at: snapshot.captured_at,
+      updated_by_id: userId,
+    });
+
+    const savedReview = await this.groupReviewRepository.save(review);
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'group_review_upserted',
+        semester_id: semester.id,
+        group_id: group.id,
+        milestone_code: milestone.code,
+        actor_user_id: userId,
+      }),
+    );
+
+    return {
+      semester: this.serializeSemester(semester),
+      milestone,
+      group: this.serializeReviewGroup(group, savedReview, milestone),
+    };
+  }
+
+  async getStudentReviewStatus(userId: string) {
+    const semester = await this.getCurrentSemester();
+
+    if (!semester) {
+      return {
+        semester: null,
+        milestone: null,
+        groups: [],
+      };
+    }
+
+    const milestone = this.resolveReviewMilestone(semester.current_week);
+    const groupMemberships = await this.groupMembershipRepository.find({
+      where: {
+        user_id: userId,
+        left_at: IsNull(),
+      },
+      relations: ['group', 'group.class', 'group.topic'],
+    });
+
+    const currentGroups = groupMemberships
+      .map((membership) => membership.group)
+      .filter(
+        (group): group is Group & { class: Class } =>
+          !!group && !!group.class && group.class.semester === semester.code,
+      );
+
+    const reviewMap = await this.getReviewMapForGroups(
+      semester.id,
+      milestone,
+      currentGroups.map((group) => group.id),
+    );
+
+    return {
+      semester: this.serializeSemester(semester),
+      milestone,
+      groups: currentGroups.map((group) => ({
+        class_id: group.class_id,
+        class_code: group.class.code,
+        class_name: group.class.name,
+        ...this.serializeReviewGroup(group, reviewMap.get(group.id), milestone),
+      })),
     };
   }
 
@@ -957,6 +1243,207 @@ export class SemesterService {
 
   private isTopicFinalized(group: Pick<Group, 'topic_id' | 'project_name'>) {
     return !!group.topic_id || !!group.project_name?.trim();
+  }
+
+  private resolveReviewMilestone(
+    currentWeek: number,
+  ): ReviewMilestoneContext | null {
+    if (currentWeek >= 3 && currentWeek <= 4) {
+      return {
+        code: ReviewMilestoneCode.REVIEW_1,
+        label: 'Review 1',
+        week_start: 3,
+        week_end: 4,
+      };
+    }
+
+    if (currentWeek >= 5 && currentWeek <= 6) {
+      return {
+        code: ReviewMilestoneCode.PROGRESS_TRACKING,
+        label: 'Progress Tracking',
+        week_start: 5,
+        week_end: 6,
+      };
+    }
+
+    if (currentWeek >= 7 && currentWeek <= 8) {
+      return {
+        code: ReviewMilestoneCode.REVIEW_2,
+        label: 'Review 2',
+        week_start: 7,
+        week_end: 8,
+      };
+    }
+
+    if (currentWeek >= 9 && currentWeek <= 10) {
+      return {
+        code: ReviewMilestoneCode.REVIEW_3,
+        label: 'Review 3',
+        week_start: 9,
+        week_end: 10,
+      };
+    }
+
+    return null;
+  }
+
+  private async getReviewMapForGroups(
+    semesterId: string,
+    milestone: ReviewMilestoneContext | null,
+    groupIds: string[],
+  ) {
+    if (!milestone || groupIds.length === 0) {
+      return new Map<string, GroupReview>();
+    }
+
+    const reviews = await this.groupReviewRepository.find({
+      where: {
+        semester_id: semesterId,
+        group_id: In(groupIds),
+        milestone_code: milestone.code,
+      },
+    });
+
+    return new Map(reviews.map((review) => [review.group_id, review]));
+  }
+
+  private serializeReviewGroup(
+    group: Pick<Group, 'id' | 'name' | 'project_name'> & { topic?: { name?: string | null } | null },
+    review: GroupReview | undefined,
+    milestone: ReviewMilestoneContext | null,
+  ) {
+    const warnings = this.buildReviewWarnings(review, milestone);
+    const reviewStatus: ReviewMilestoneStatus = review ? 'REVIEWED' : 'PENDING';
+    const totalScore =
+      (Number(review?.task_progress_score ?? 0) || 0) +
+      (Number(review?.commit_contribution_score ?? 0) || 0) +
+      (Number(review?.review_milestone_score ?? 0) || 0);
+
+    return {
+      group_id: group.id,
+      group_name: group.name,
+      topic_name: group.topic?.name || group.project_name || null,
+      review_status: reviewStatus,
+      scores: {
+        task_progress_score: review?.task_progress_score ?? null,
+        commit_contribution_score: review?.commit_contribution_score ?? null,
+        review_milestone_score: review?.review_milestone_score ?? null,
+        total_score: review ? Number(totalScore.toFixed(2)) : null,
+      },
+      lecturer_note: review?.lecturer_note ?? null,
+      snapshot: {
+        task_total: review?.snapshot_task_total ?? 0,
+        task_done: review?.snapshot_task_done ?? 0,
+        commit_total: review?.snapshot_commit_total ?? null,
+        commit_contributors: review?.snapshot_commit_contributors ?? null,
+        repository: review?.snapshot_repository ?? null,
+        captured_at: review?.snapshot_captured_at ?? null,
+      },
+      warnings,
+      milestone: milestone,
+    };
+  }
+
+  private buildReviewWarnings(
+    review: GroupReview | undefined,
+    milestone: ReviewMilestoneContext | null,
+  ) {
+    const warnings: string[] = [];
+
+    if (!milestone) {
+      return warnings;
+    }
+
+    if (!review) {
+      warnings.push('REVIEW_NOT_CAPTURED');
+      return warnings;
+    }
+
+    if (review.snapshot_task_total <= 0) {
+      warnings.push('NO_TASK_EVIDENCE');
+    }
+
+    if (
+      review.snapshot_commit_total === null ||
+      review.snapshot_commit_total === undefined ||
+      review.snapshot_commit_total <= 0
+    ) {
+      warnings.push('NO_COMMIT_EVIDENCE');
+    }
+
+    return warnings;
+  }
+
+  private async captureReviewSnapshot(
+    group: Pick<Group, 'id'>,
+  ): Promise<{
+    task_total: number;
+    task_done: number;
+    commit_total: number | null;
+    commit_contributors: number | null;
+    repository: string | null;
+    captured_at: Date;
+  }> {
+    const tasks = await this.taskRepository.find({
+      where: {
+        group_id: group.id,
+        deleted_at: IsNull(),
+      },
+      select: {
+        id: true,
+        status: true,
+      },
+    });
+
+    let commitTotal: number | null = null;
+    let commitContributors: number | null = null;
+    let repository: string | null = null;
+
+    const primaryRepo =
+      (await this.groupRepositoryLinkRepository.findOne({
+        where: { group_id: group.id, is_primary: true },
+      })) ||
+      (await this.groupRepositoryLinkRepository.findOne({
+        where: { group_id: group.id },
+        order: { created_at: 'ASC' },
+      }));
+
+    if (primaryRepo) {
+      repository = `${primaryRepo.repo_owner}/${primaryRepo.repo_name}`;
+
+      try {
+        const commits = await this.githubService.getRepoCommits(
+          primaryRepo.added_by_id,
+          primaryRepo.repo_owner,
+          primaryRepo.repo_name,
+        );
+        commitTotal = commits.length;
+        commitContributors = new Set(
+          commits.map((commit) => commit.author || 'Unknown'),
+        ).size;
+      } catch (error) {
+        this.logger.warn(
+          JSON.stringify({
+            event: 'review_snapshot_commit_fetch_failed',
+            group_id: group.id,
+            repository,
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Failed to capture commit snapshot.',
+          }),
+        );
+      }
+    }
+
+    return {
+      task_total: tasks.length,
+      task_done: tasks.filter((task) => task.status === TaskStatus.DONE).length,
+      commit_total: commitTotal,
+      commit_contributors: commitContributors,
+      repository,
+      captured_at: new Date(),
+    };
   }
 
   private serializeSemester(semester: Semester): SerializedSemester {

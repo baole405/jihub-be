@@ -13,6 +13,7 @@ import { Class } from './class.entity';
 import { DocumentSubmission } from './document-submission.entity';
 import { Evaluation } from './evaluation.entity';
 import { GroupMembership } from './group-membership.entity';
+import { GroupReview } from './group-review.entity';
 import { Topic } from './topic.entity';
 import { User } from './user.entity';
 
@@ -77,4 +78,7 @@ export class Group {
 
   @OneToMany(() => Evaluation, (evaluation) => evaluation.group)
   evaluations: Evaluation[];
+
+  @OneToMany(() => GroupReview, (review) => review.group)
+  reviews: GroupReview[];
 }

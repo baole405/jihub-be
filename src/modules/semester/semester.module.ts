@@ -5,12 +5,16 @@ import {
   ClassMembership,
   Group,
   GroupMembership,
+  GroupRepository,
+  GroupReview,
   ImportBatch,
   ImportRowLog,
   Semester,
   SemesterWeekAuditLog,
+  Task,
   User,
 } from '../../entities';
+import { GithubModule } from '../github/github.module';
 import { SemesterController } from './semester.controller';
 import { SemesterGovernanceController } from './semester-governance.controller';
 import { SemesterPublicController } from './semester-public.controller';
@@ -18,6 +22,7 @@ import { SemesterService } from './semester.service';
 
 @Module({
   imports: [
+    GithubModule,
     TypeOrmModule.forFeature([
       Semester,
       ImportBatch,
@@ -26,7 +31,10 @@ import { SemesterService } from './semester.service';
       ClassMembership,
       Group,
       GroupMembership,
+      GroupRepository,
+      GroupReview,
       SemesterWeekAuditLog,
+      Task,
       User,
     ]),
   ],

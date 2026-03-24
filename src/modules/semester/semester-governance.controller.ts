@@ -13,6 +13,7 @@ import {
   ApiBearerAuth,
   ApiExcludeEndpoint,
   ApiOperation,
+  ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 import { Role } from '../../common/enums';
@@ -21,6 +22,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { SetCurrentWeekDto } from './dto/set-current-week.dto';
+import { UpsertGroupReviewDto } from './dto/upsert-group-review.dto';
 import { SemesterService } from './semester.service';
 
 @ApiTags('Semester Governance')
@@ -36,6 +38,14 @@ export class SemesterGovernanceController {
   })
   async getCurrentWeek() {
     return this.semesterService.getCurrentWeek();
+  }
+
+  @Get('current/review-milestone')
+  @ApiOperation({
+    summary: 'Get current milestone window mapped from semester week',
+  })
+  async getCurrentReviewMilestone() {
+    return this.semesterService.getCurrentReviewMilestone();
   }
 
   @Patch(':id/current-week')
@@ -78,5 +88,56 @@ export class SemesterGovernanceController {
   })
   async getStudentWarnings(@Req() req: AuthorizedRequest) {
     return this.semesterService.getStudentWeeklyWarnings(req.user.id);
+  }
+
+  @Get('current/reviews/lecturer-summary')
+  @Roles(Role.LECTURER, Role.ADMIN)
+  @ApiOperation({
+    summary:
+      'Get lightweight lecturer review summary for the active review milestone',
+  })
+  @ApiQuery({
+    name: 'classId',
+    required: false,
+    description: 'Optional class UUID to narrow lecturer review summary',
+  })
+  async getLecturerReviewSummary(
+    @Req() req: AuthorizedRequest,
+    @Query('classId') classId?: string,
+  ) {
+    return this.semesterService.getLecturerReviewSummary(
+      req.user.id,
+      req.user.role as Role,
+      classId,
+    );
+  }
+
+  @Get('current/reviews/student-status')
+  @Roles(Role.STUDENT, Role.GROUP_LEADER)
+  @ApiOperation({
+    summary:
+      'Get current review milestone state for the calling student or group leader',
+  })
+  async getStudentReviewStatus(@Req() req: AuthorizedRequest) {
+    return this.semesterService.getStudentReviewStatus(req.user.id);
+  }
+
+  @Patch('groups/:groupId/current-review')
+  @Roles(Role.LECTURER, Role.ADMIN)
+  @ApiOperation({
+    summary:
+      'Create or update quick lecturer score for the active milestone and snapshot current task/commit evidence',
+  })
+  async upsertCurrentGroupReview(
+    @Param('groupId', ParseUUIDPipe) groupId: string,
+    @Req() req: AuthorizedRequest,
+    @Body() dto: UpsertGroupReviewDto,
+  ) {
+    return this.semesterService.upsertCurrentGroupReview(
+      groupId,
+      req.user.id,
+      req.user.role as Role,
+      dto,
+    );
   }
 }

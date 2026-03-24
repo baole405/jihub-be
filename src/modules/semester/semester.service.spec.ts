@@ -2,18 +2,27 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { AuthProvider, Role, SemesterStatus } from '../../common/enums';
+import {
+  AuthProvider,
+  ReviewMilestoneCode,
+  Role,
+  SemesterStatus,
+} from '../../common/enums';
 import {
   Class,
   ClassMembership,
   Group,
   GroupMembership,
+  GroupRepository,
+  GroupReview,
   ImportBatch,
   ImportRowLog,
   Semester,
   SemesterWeekAuditLog,
+  Task,
   User,
 } from '../../entities';
+import { GithubService } from '../github/github.service';
 import { SemesterService } from './semester.service';
 
 function createMockRepository() {
@@ -36,9 +45,13 @@ describe('SemesterService', () => {
   let classMembershipRepo: ReturnType<typeof createMockRepository>;
   let groupRepo: ReturnType<typeof createMockRepository>;
   let groupMembershipRepo: ReturnType<typeof createMockRepository>;
+  let groupRepoLinkRepo: ReturnType<typeof createMockRepository>;
+  let groupReviewRepo: ReturnType<typeof createMockRepository>;
+  let taskRepo: ReturnType<typeof createMockRepository>;
   let weekAuditRepo: ReturnType<typeof createMockRepository>;
   let userRepo: ReturnType<typeof createMockRepository>;
   let configService: { get: jest.Mock };
+  let githubService: { getRepoCommits: jest.Mock };
 
   beforeEach(async () => {
     semesterRepo = createMockRepository();
@@ -48,9 +61,13 @@ describe('SemesterService', () => {
     classMembershipRepo = createMockRepository();
     groupRepo = createMockRepository();
     groupMembershipRepo = createMockRepository();
+    groupRepoLinkRepo = createMockRepository();
+    groupReviewRepo = createMockRepository();
+    taskRepo = createMockRepository();
     weekAuditRepo = createMockRepository();
     userRepo = createMockRepository();
     configService = { get: jest.fn() };
+    githubService = { getRepoCommits: jest.fn() };
 
     batchRepo.save.mockImplementation(async (entity) => ({
       id: entity.id ?? 'batch-1',
@@ -71,6 +88,10 @@ describe('SemesterService', () => {
     }));
     weekAuditRepo.save.mockImplementation(async (entity) => ({
       id: entity.id ?? 'audit-1',
+      ...entity,
+    }));
+    groupReviewRepo.save.mockImplementation(async (entity) => ({
+      id: entity.id ?? 'review-1',
       ...entity,
     }));
     configService.get.mockImplementation((key: string) => {
@@ -102,10 +123,20 @@ describe('SemesterService', () => {
           useValue: groupMembershipRepo,
         },
         {
+          provide: getRepositoryToken(GroupRepository),
+          useValue: groupRepoLinkRepo,
+        },
+        {
+          provide: getRepositoryToken(GroupReview),
+          useValue: groupReviewRepo,
+        },
+        { provide: getRepositoryToken(Task), useValue: taskRepo },
+        {
           provide: getRepositoryToken(SemesterWeekAuditLog),
           useValue: weekAuditRepo,
         },
         { provide: getRepositoryToken(User), useValue: userRepo },
+        { provide: GithubService, useValue: githubService },
       ],
     }).compile();
 
@@ -351,6 +382,207 @@ describe('SemesterService', () => {
         expect.objectContaining({ code: 'WEEK1_NO_GROUP', class_id: 'class-2' }),
       ]),
     );
+  });
+
+  it('maps current week to grouped review milestone windows', async () => {
+    semesterRepo.findOne.mockResolvedValueOnce({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 7,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+
+    const result = await service.getCurrentReviewMilestone();
+
+    expect(result.semester?.current_week).toBe(7);
+    expect(result.milestone).toEqual({
+      code: ReviewMilestoneCode.REVIEW_2,
+      label: 'Review 2',
+      week_start: 7,
+      week_end: 8,
+    });
+  });
+
+  it('upserts a lecturer group review with task and commit snapshot evidence', async () => {
+    semesterRepo.findOne.mockResolvedValueOnce({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 5,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+    groupRepo.findOne.mockResolvedValue({
+      id: 'group-1',
+      class_id: 'class-1',
+      name: 'Group 1',
+      project_name: 'Project One',
+      topic: null,
+      class: {
+        id: 'class-1',
+        lecturer_id: 'lecturer-1',
+      },
+    });
+    taskRepo.find.mockResolvedValue([
+      { id: 'task-1', status: 'DONE' },
+      { id: 'task-2', status: 'TODO' },
+    ]);
+    groupRepoLinkRepo.findOne
+      .mockResolvedValueOnce({
+        group_id: 'group-1',
+        repo_owner: 'org',
+        repo_name: 'repo',
+        added_by_id: 'leader-1',
+      })
+      .mockResolvedValueOnce(null);
+    githubService.getRepoCommits.mockResolvedValue([
+      { author: 'alice' },
+      { author: 'alice' },
+      { author: 'bob' },
+    ]);
+    groupReviewRepo.findOne.mockResolvedValue(null);
+
+    const result = await service.upsertCurrentGroupReview(
+      'group-1',
+      'lecturer-1',
+      Role.LECTURER,
+      {
+        task_progress_score: 8,
+        commit_contribution_score: 7,
+        review_milestone_score: 9,
+        lecturer_note: 'Good progress for checkpoint.',
+      },
+    );
+
+    expect(groupReviewRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        milestone_code: ReviewMilestoneCode.PROGRESS_TRACKING,
+        snapshot_task_total: 2,
+        snapshot_task_done: 1,
+        snapshot_commit_total: 3,
+        snapshot_commit_contributors: 2,
+      }),
+    );
+    expect(result.group.review_status).toBe('REVIEWED');
+    expect(result.group.scores.total_score).toBe(24);
+    expect(result.group.snapshot.repository).toBe('org/repo');
+  });
+
+  it('returns lecturer review summary with missing evidence warnings', async () => {
+    semesterRepo.findOne.mockResolvedValueOnce({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 9,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+    classRepo.find.mockResolvedValue([
+      {
+        id: 'class-1',
+        code: 'SWP391',
+        name: 'Software Project',
+      },
+    ]);
+    groupRepo.find.mockResolvedValue([
+      {
+        id: 'group-1',
+        class_id: 'class-1',
+        name: 'Group 1',
+        project_name: null,
+        topic: null,
+      },
+    ]);
+    groupReviewRepo.find.mockResolvedValue([
+      {
+        id: 'review-1',
+        group_id: 'group-1',
+        milestone_code: ReviewMilestoneCode.REVIEW_3,
+        task_progress_score: 7,
+        commit_contribution_score: 6,
+        review_milestone_score: 8,
+        lecturer_note: 'Need more commit activity.',
+        snapshot_task_total: 0,
+        snapshot_task_done: 0,
+        snapshot_commit_total: null,
+        snapshot_commit_contributors: null,
+        snapshot_repository: null,
+        snapshot_captured_at: new Date('2026-03-25T00:00:00.000Z'),
+      },
+    ]);
+
+    const result = await service.getLecturerReviewSummary(
+      'lecturer-1',
+      Role.LECTURER,
+    );
+
+    expect(result.milestone?.code).toBe(ReviewMilestoneCode.REVIEW_3);
+    expect(result.summary.groups_missing_task_evidence).toBe(1);
+    expect(result.summary.groups_missing_commit_evidence).toBe(1);
+    expect(result.classes[0].groups[0].warnings).toEqual(
+      expect.arrayContaining(['NO_TASK_EVIDENCE', 'NO_COMMIT_EVIDENCE']),
+    );
+  });
+
+  it('returns student review status for joined groups in the active semester', async () => {
+    semesterRepo.findOne.mockResolvedValueOnce({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 4,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+    groupMembershipRepo.find.mockResolvedValue([
+      {
+        group: {
+          id: 'group-1',
+          class_id: 'class-1',
+          name: 'Group 1',
+          project_name: 'Project One',
+          topic: null,
+          class: {
+            id: 'class-1',
+            code: 'SWP391',
+            name: 'Software Project',
+            semester: 'SP26',
+          },
+        },
+      },
+    ]);
+    groupReviewRepo.find.mockResolvedValue([
+      {
+        id: 'review-1',
+        group_id: 'group-1',
+        milestone_code: ReviewMilestoneCode.REVIEW_1,
+        task_progress_score: 8,
+        commit_contribution_score: 7,
+        review_milestone_score: 9,
+        lecturer_note: 'Solid first review.',
+        snapshot_task_total: 3,
+        snapshot_task_done: 2,
+        snapshot_commit_total: 6,
+        snapshot_commit_contributors: 2,
+        snapshot_repository: 'org/repo',
+        snapshot_captured_at: new Date('2026-03-25T00:00:00.000Z'),
+      },
+    ]);
+
+    const result = await service.getStudentReviewStatus('student-1');
+
+    expect(result.milestone?.code).toBe(ReviewMilestoneCode.REVIEW_1);
+    expect(result.groups[0]).toMatchObject({
+      class_id: 'class-1',
+      group_id: 'group-1',
+      review_status: 'REVIEWED',
+    });
+    expect(result.groups[0].warnings).toHaveLength(0);
   });
 
   it('blocks imports into closed semesters', async () => {
