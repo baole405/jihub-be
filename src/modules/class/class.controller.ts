@@ -25,6 +25,7 @@ import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { ClassService } from './class.service';
+import { ClassAnalyticsResponseDto } from './dto/class-analytics.dto';
 import { CreateClassDto } from './dto/create-class.dto';
 import { ImportStudentsResponseDto } from './dto/import-students-response.dto';
 import { JoinClassDto } from './dto/join-class.dto';
@@ -68,6 +69,28 @@ export class ClassController {
   })
   async getMyClasses(@Req() req: AuthorizedRequest) {
     return this.classService.myClasses(req.user.id);
+  }
+
+  @Get(':id/analytics')
+  @Roles(Role.LECTURER, Role.ADMIN)
+  @ApiOperation({
+    summary: 'Get class overview analytics (Lecturer/Admin only)',
+  })
+  @ApiResponse({ status: 200, type: ClassAnalyticsResponseDto })
+  @ApiResponse({
+    status: 403,
+    description: 'Not authorized to view this class',
+  })
+  @ApiResponse({ status: 404, description: 'Class not found' })
+  async getClassAnalytics(
+    @Req() req: AuthorizedRequest,
+    @Param('id', ParseUUIDPipe) classId: string,
+  ) {
+    return this.classService.getClassAnalytics(
+      classId,
+      req.user.id,
+      req.user.role,
+    );
   }
 
   @Post(':id/join')
