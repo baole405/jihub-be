@@ -120,20 +120,25 @@ export class GroupsService {
     const [groups, total] = await qb.getManyAndCount();
     const groupIds = groups.map((group) => group.id);
 
-    const memberships =
-      groupIds.length > 0
-        ? await this.membershipRepository.find({
-            where: {
-              group_id: In(groupIds),
-              user_id: userId,
-              left_at: IsNull(),
-            },
-            select: {
-              group_id: true,
-              role_in_group: true,
-            },
-          })
-        : [];
+    let memberships: Array<
+      Pick<GroupMembership, 'group_id' | 'role_in_group'>
+    > = [];
+
+    if (groupIds.length > 0) {
+      const membershipRows = await this.membershipRepository.find({
+        where: {
+          group_id: In(groupIds),
+          user_id: userId,
+          left_at: IsNull(),
+        },
+        select: {
+          group_id: true,
+          role_in_group: true,
+        },
+      });
+
+      memberships = Array.isArray(membershipRows) ? membershipRows : [];
+    }
 
     const roleByGroupId = new Map(
       memberships.map((membership) => [
