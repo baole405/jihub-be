@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -8,8 +9,13 @@ import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
 import { In, Repository } from 'typeorm';
+import { DocumentStatus } from '../../common/enums';
+import { ERROR_MESSAGES } from '../../common/constants';
 import { ClassMembership } from '../../entities/class-membership.entity';
 import { Class } from '../../entities/class.entity';
+import { DocumentSubmission } from '../../entities/document-submission.entity';
+import { GroupMembership } from '../../entities/group-membership.entity';
+import { GroupRepository as GroupRepositoryEntity } from '../../entities/group-repository.entity';
 import { Group } from '../../entities/group.entity';
 import { Notification } from '../../entities/notification.entity';
 import { User } from '../../entities/user.entity';
@@ -243,5 +249,124 @@ export class ClassService {
     );
 
     return result;
+  }
+
+  async getClassAnalytics(classId: string, userId: string, userRole: string) {
+    // 1. Fetch and verify class
+    const targetClass = await this.classRepo.findOne({
+      where: { id: classId },
+    });
+    if (!targetClass) {
+      throw new NotFoundException(ERROR_MESSAGES.CLASSES.NOT_FOUND);
+    }
+
+    // 2. Authorization check
+    if (userRole === 'LECTURER') {
+      if (targetClass.lecturer_id !== userId) {
+        throw new ForbiddenException(ERROR_MESSAGES.CLASSES.ACCESS_DENIED);
+      }
+    } else if (userRole !== 'ADMIN') {
+      throw new ForbiddenException(ERROR_MESSAGES.CLASSES.ACCESS_DENIED);
+    }
+
+    // 3. Summary: student count
+    const totalStudents = await this.classMembershipRepo.count({
+      where: { class_id: classId },
+    });
+
+    // 4. Summary: group stats
+    const groupStats = await this.groupRepo
+      .createQueryBuilder('g')
+      .select('COUNT(*)', 'total_groups')
+      .addSelect('COUNT(g.topic_id)', 'groups_with_topic')
+      .addSelect(
+        'SUM(CASE WHEN g.github_repo_url IS NOT NULL THEN 1 ELSE 0 END)',
+        'groups_with_github',
+      )
+      .addSelect(
+        'SUM(CASE WHEN g.jira_project_key IS NOT NULL THEN 1 ELSE 0 END)',
+        'groups_with_jira',
+      )
+      .where('g.class_id = :classId', { classId })
+      .getRawOne();
+
+    const totalGroups = parseInt(groupStats.total_groups, 10) || 0;
+    const groupsWithTopic = parseInt(groupStats.groups_with_topic, 10) || 0;
+
+    // 5. Per-group details
+    const rawGroups = await this.groupRepo
+      .createQueryBuilder('g')
+      .leftJoin('g.topic', 't')
+      .select([
+        'g.id AS id',
+        'g.name AS name',
+        'g.status AS status',
+        't.name AS topic_name',
+        'g.github_repo_url AS github_repo_url',
+        'g.jira_project_key AS jira_project_key',
+      ])
+      .addSelect((subQuery) => {
+        return subQuery
+          .select('COUNT(*)')
+          .from(GroupMembership, 'gm')
+          .where('gm.group_id = g.id')
+          .andWhere('gm.left_at IS NULL');
+      }, 'member_count')
+      .addSelect((subQuery) => {
+        return subQuery
+          .select('COUNT(*)')
+          .from(GroupRepositoryEntity, 'gr')
+          .where('gr.group_id = g.id');
+      }, 'linked_repos_count')
+      .addSelect((subQuery) => {
+        return subQuery
+          .select('COUNT(*)')
+          .from(DocumentSubmission, 'ds')
+          .where('ds.group_id = g.id');
+      }, 'submission_count')
+      .addSelect((subQuery) => {
+        return subQuery
+          .select('AVG(ds2.score)')
+          .from(DocumentSubmission, 'ds2')
+          .where('ds2.group_id = g.id')
+          .andWhere('ds2.status = :gradedStatus')
+          .andWhere('ds2.score IS NOT NULL');
+      }, 'graded_avg_score')
+      .where('g.class_id = :classId', { classId })
+      .setParameter('gradedStatus', DocumentStatus.GRADED)
+      .orderBy('g.name', 'ASC')
+      .getRawMany();
+
+    // 6. Map raw results to response shape
+    const groups = rawGroups.map((row) => ({
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      topic_name: row.topic_name || null,
+      member_count: parseInt(row.member_count, 10) || 0,
+      linked_repos_count: parseInt(row.linked_repos_count, 10) || 0,
+      submission_count: parseInt(row.submission_count, 10) || 0,
+      graded_avg_score: row.graded_avg_score
+        ? Math.round(parseFloat(row.graded_avg_score) * 100) / 100
+        : null,
+      has_github: !!row.github_repo_url,
+      has_jira: !!row.jira_project_key,
+    }));
+
+    return {
+      class_id: targetClass.id,
+      class_name: targetClass.name,
+      class_code: targetClass.code,
+      semester: targetClass.semester || null,
+      summary: {
+        total_students: totalStudents,
+        total_groups: totalGroups,
+        groups_with_topic: groupsWithTopic,
+        groups_without_topic: totalGroups - groupsWithTopic,
+        groups_with_github: parseInt(groupStats.groups_with_github, 10) || 0,
+        groups_with_jira: parseInt(groupStats.groups_with_jira, 10) || 0,
+      },
+      groups,
+    };
   }
 }

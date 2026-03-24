@@ -36,6 +36,10 @@ export const ERROR_MESSAGES = {
     ASSIGNEE_NOT_IN_GROUP:
       'Assigned user must be an active member of the same group',
   },
+  CLASSES: {
+    NOT_FOUND: 'Class not found',
+    ACCESS_DENIED: 'You do not have permission to view this class',
+  },
   VALIDATION: {
     INVALID_EMAIL: 'Invalid email format',
     PASSWORD_TOO_SHORT: 'Password must be at least 6 characters',
