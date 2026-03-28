@@ -1,9 +1,12 @@
 export { AuthProvider } from './auth-provider.enum';
+export { ChatConversationStatus } from './chat-conversation-status.enum';
+export { ChatMessageType } from './chat-message-type.enum';
 export { ClassStatus } from './class-status.enum';
 export { DocumentStatus } from './document-status.enum';
 export { GroupStatus } from './group-status.enum';
 export { IntegrationProvider } from './integration-provider.enum';
 export { MembershipRole } from './membership-role.enum';
+export { ReviewMilestoneCode } from './review-milestone-code.enum';
 export { Role } from './role.enum';
 export { SemesterStatus } from './semester-status.enum';
 export { TaskPriority } from './task-priority.enum';

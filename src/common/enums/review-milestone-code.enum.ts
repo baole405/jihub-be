@@ -1,0 +1,6 @@
+export enum ReviewMilestoneCode {
+  REVIEW_1 = 'REVIEW_1',
+  PROGRESS_TRACKING = 'PROGRESS_TRACKING',
+  REVIEW_2 = 'REVIEW_2',
+  REVIEW_3 = 'REVIEW_3',
+}

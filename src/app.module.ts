@@ -7,6 +7,7 @@ import { AppService } from './app.service';
 import { HealthController } from './health/health.controller';
 import { AuthModule } from './modules/auth/auth.module';
 import { ClassModule } from './modules/class/class.module';
+import { ChatModule } from './modules/chat/chat.module';
 import { DocumentSubmissionModule } from './modules/document-submission/document-submission.module';
 import { EvaluationModule } from './modules/evaluation/evaluation.module';
 import { GithubModule } from './modules/github/github.module';
@@ -53,6 +54,7 @@ import { UsersModule } from './modules/users/users.module';
     GithubModule,
     JiraModule,
     ClassModule,
+    ChatModule,
     NotificationModule,
     DocumentSubmissionModule,
     EvaluationModule,

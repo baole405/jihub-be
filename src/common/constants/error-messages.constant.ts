@@ -36,6 +36,17 @@ export const ERROR_MESSAGES = {
     ASSIGNEE_NOT_IN_GROUP:
       'Assigned user must be an active member of the same group',
   },
+  CHAT: {
+    FORBIDDEN: 'You do not have access to this conversation',
+    NOT_FOUND: 'Conversation not found',
+    INVALID_CONTEXT:
+      'Conversation must match a valid semester, class, student, and lecturer context',
+    INVALID_PAYLOAD: 'Chat payload is invalid',
+    DUPLICATE_CLIENT_ID:
+      'A message with the same client_id already exists in this conversation',
+    CLOSED: 'Conversation is closed',
+    RATE_LIMITED: 'Too many chat messages. Please retry shortly.',
+  },
   CLASSES: {
     NOT_FOUND: 'Class not found',
     ACCESS_DENIED: 'You do not have permission to view this class',
