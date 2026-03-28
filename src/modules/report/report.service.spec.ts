@@ -34,7 +34,10 @@ describe('ReportService', () => {
       providers: [
         ReportService,
         { provide: getRepositoryToken(Group), useValue: groupRepository },
-        { provide: getRepositoryToken(ProjectLink), useValue: projectLinkRepository },
+        {
+          provide: getRepositoryToken(ProjectLink),
+          useValue: projectLinkRepository,
+        },
         { provide: JiraService, useValue: jiraService },
         { provide: GithubService, useValue: githubService },
       ],

@@ -1,8 +1,6 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-export class AddJiraSyncStateToTask1761300000000
-  implements MigrationInterface
-{
+export class AddJiraSyncStateToTask1761300000000 implements MigrationInterface {
   name = 'AddJiraSyncStateToTask1761300000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {

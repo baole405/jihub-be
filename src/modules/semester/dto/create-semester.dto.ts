@@ -1,5 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsDateString, IsEnum, IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import {
+  IsDateString,
+  IsEnum,
+  IsNotEmpty,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 import { SemesterStatus } from '../../../common/enums';
 
 export class CreateSemesterDto {
@@ -23,8 +29,10 @@ export class CreateSemesterDto {
   @IsDateString()
   end_date: string;
 
-  @ApiPropertyOptional({ enum: SemesterStatus, example: SemesterStatus.UPCOMING })
+  @ApiPropertyOptional({
+    enum: SemesterStatus,
+    example: SemesterStatus.UPCOMING,
+  })
   @IsEnum(SemesterStatus)
   status?: SemesterStatus;
 }
-

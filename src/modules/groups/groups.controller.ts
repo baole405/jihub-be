@@ -30,11 +30,13 @@ import { AddMemberDto } from './dto/add-member.dto';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { QueryGroupsDto } from './dto/query-groups.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
+import { ReassignMembersDto } from './dto/reassign-members.dto';
 import { UpdateMemberDto } from './dto/update-member.dto';
 import {
   GroupDetailEntity,
   GroupMemberEntity,
   PaginatedGroupsEntity,
+  ReassignMembersResponseEntity,
 } from './entities/group.entity';
 import { GroupsService } from './groups.service';
 
@@ -222,6 +224,42 @@ export class GroupsController {
     @Req() req: AuthorizedRequest,
   ) {
     return this.groupsService.leaveGroup(id, req.user.id);
+  }
+
+  @Post(':id/reassign-members')
+  @Roles(Role.LECTURER, Role.ADMIN)
+  @ApiOperation({
+    summary:
+      'Reassign members from a group to other groups (lecturer or admin)',
+    description:
+      'Moves a subset (or all) of active members from the source group into other target groups within the same class. Optionally archives the source group if emptied.',
+  })
+  @ApiParam({ name: 'id', description: 'Source group UUID to reassign from' })
+  @ApiResponse({
+    status: 200,
+    description: 'Members reassigned successfully',
+    type: ReassignMembersResponseEntity,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation error (max exceeded, leader protection, etc.)',
+  })
+  @ApiResponse({ status: 403, description: 'Not the class lecturer or admin' })
+  @ApiResponse({
+    status: 404,
+    description: 'Source or target group not found',
+  })
+  async reassignMembers(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: AuthorizedRequest,
+    @Body() dto: ReassignMembersDto,
+  ) {
+    return this.groupsService.reassignMembers(
+      id,
+      dto,
+      req.user.id,
+      req.user.role as Role,
+    );
   }
 
   @Patch(':id/members/:userId')

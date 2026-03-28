@@ -25,7 +25,9 @@ export class TaskResponseEntity {
   @ApiProperty({ example: 'Prepare API contract for mobile task list' })
   title: string;
 
-  @ApiPropertyOptional({ example: 'Return pagination and assignee display name.' })
+  @ApiPropertyOptional({
+    example: 'Return pagination and assignee display name.',
+  })
   description?: string | null;
 
   @ApiProperty({ enum: TaskStatus, example: TaskStatus.TODO })

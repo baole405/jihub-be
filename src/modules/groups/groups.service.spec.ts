@@ -5,7 +5,9 @@ import {
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import {
+  Class,
   Group,
   GroupMembership,
   GroupRepository,
@@ -24,7 +26,12 @@ import { GroupsService } from './groups.service';
 
 const USER_ID = '11111111-1111-1111-1111-111111111111';
 const OTHER_USER_ID = '22222222-2222-2222-2222-222222222222';
+const THIRD_USER_ID = '33333333-3333-3333-3333-333333333333';
 const GROUP_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const TARGET_GROUP_ID = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+const TARGET_GROUP_ID_2 = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
+const CLASS_ID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
+const LECTURER_ID = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
 const NOW = new Date('2026-02-23T00:00:00Z');
 
 const mockUser = {
@@ -41,6 +48,12 @@ const mockOtherUser = {
   avatar_url: null,
 };
 
+const mockClass = {
+  id: CLASS_ID,
+  lecturer_id: LECTURER_ID,
+  max_students_per_group: 5,
+};
+
 const mockGroup = {
   id: GROUP_ID,
   name: 'Group Alpha',
@@ -48,11 +61,26 @@ const mockGroup = {
   description: 'Building an e-commerce app',
   semester: 'HK2-2025',
   status: 'ACTIVE',
+  class_id: CLASS_ID,
   github_repo_url: 'https://github.com/org/repo',
   jira_project_key: 'ECOM',
   created_by_id: USER_ID,
   created_at: NOW,
   updated_at: NOW,
+};
+
+const mockTargetGroup = {
+  id: TARGET_GROUP_ID,
+  name: 'Group Beta',
+  status: GroupStatus.ACTIVE,
+  class_id: CLASS_ID,
+};
+
+const mockTargetGroup2 = {
+  id: TARGET_GROUP_ID_2,
+  name: 'Group Gamma',
+  status: GroupStatus.ACTIVE,
+  class_id: CLASS_ID,
 };
 
 const mockMembership = {
@@ -89,8 +117,10 @@ function createMockGroupRepository() {
     create: jest.fn((dto) => dto),
     save: jest.fn(),
     findOne: jest.fn(),
+    find: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
+    exist: jest.fn(),
     createQueryBuilder: jest.fn(() => qb),
     _qb: qb,
   };
@@ -105,6 +135,7 @@ function createMockMembershipRepository() {
     count: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
+    createQueryBuilder: jest.fn(),
   };
 }
 
@@ -130,6 +161,26 @@ function createMockIntegrationTokenRepository() {
   };
 }
 
+function createMockClassRepository() {
+  return {
+    findOne: jest.fn(),
+  };
+}
+
+function createMockDataSource() {
+  return {
+    transaction: jest.fn((cb) => {
+      const manager = {
+        update: jest.fn(),
+        findOne: jest.fn(),
+        create: jest.fn((_Entity, data) => data),
+        save: jest.fn((data) => data),
+      };
+      return cb(manager);
+    }),
+  };
+}
+
 // ── Tests ────────────────────────────────────────────────
 
 describe('GroupsService', () => {
@@ -143,6 +194,8 @@ describe('GroupsService', () => {
   >;
   let githubService: { validateRepositoryAccess: jest.Mock };
   let jiraService: { validateProjectAccess: jest.Mock };
+  let classRepo: ReturnType<typeof createMockClassRepository>;
+  let dataSource: ReturnType<typeof createMockDataSource>;
 
   beforeEach(async () => {
     groupRepo = createMockGroupRepository();
@@ -150,6 +203,8 @@ describe('GroupsService', () => {
     userRepo = createMockUserRepository();
     groupRepositoryRepo = createMockGroupRepoRepository();
     integrationTokenRepo = createMockIntegrationTokenRepository();
+    classRepo = createMockClassRepository();
+    dataSource = createMockDataSource();
     githubService = { validateRepositoryAccess: jest.fn() };
     jiraService = { validateProjectAccess: jest.fn() };
 
@@ -171,6 +226,8 @@ describe('GroupsService', () => {
           provide: getRepositoryToken(IntegrationToken),
           useValue: integrationTokenRepo,
         },
+        { provide: getRepositoryToken(Class), useValue: classRepo },
+        { provide: DataSource, useValue: dataSource },
         { provide: GithubService, useValue: githubService },
         { provide: JiraService, useValue: jiraService },
       ],
@@ -859,6 +916,321 @@ describe('GroupsService', () => {
       expect(result.jira_project_key).toBe('ECOM');
       expect(result.github_repositories).toHaveLength(1);
       expect(result.github_repositories[0].repo_name).toBe('repo');
+    });
+  });
+
+  // ── reassignMembers ─────────────────────────────────
+
+  describe('reassignMembers', () => {
+    const leaderMembership = {
+      group_id: GROUP_ID,
+      user_id: USER_ID,
+      role_in_group: MembershipRole.LEADER,
+      joined_at: NOW,
+      left_at: null,
+    };
+    const memberMembership = {
+      group_id: GROUP_ID,
+      user_id: OTHER_USER_ID,
+      role_in_group: MembershipRole.MEMBER,
+      joined_at: NOW,
+      left_at: null,
+    };
+
+    const baseDto = {
+      assignments: [
+        { user_id: OTHER_USER_ID, target_group_id: TARGET_GROUP_ID },
+      ],
+      archive_source: false,
+    };
+
+    // Helper to set up the happy-path mocks
+    function setupHappyPath() {
+      // assertGroupExists
+      groupRepo.findOne.mockResolvedValue(mockGroup);
+      // classRepository.findOne (called twice: auth check + max check)
+      classRepo.findOne.mockResolvedValue(mockClass);
+      // active members of source group
+      membershipRepo.find.mockResolvedValue([
+        leaderMembership,
+        memberMembership,
+      ]);
+      // target groups lookup
+      groupRepo.find.mockResolvedValue([mockTargetGroup]);
+      // count current members in target group
+      membershipRepo.createQueryBuilder = jest.fn(() => {
+        const qb = {
+          select: jest.fn().mockReturnThis(),
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          groupBy: jest.fn().mockReturnThis(),
+          getRawMany: jest
+            .fn()
+            .mockResolvedValue([{ group_id: TARGET_GROUP_ID, count: 3 }]),
+        };
+        return qb;
+      });
+      // check member not already in target group
+      membershipRepo.findOne.mockResolvedValue(null);
+    }
+
+    it('should reassign members successfully (partial move)', async () => {
+      setupHappyPath();
+
+      const result = await service.reassignMembers(
+        GROUP_ID,
+        baseDto,
+        LECTURER_ID,
+        Role.LECTURER,
+      );
+
+      expect(result).toEqual({
+        message: 'Members reassigned successfully',
+        archived: false,
+        reassigned_count: 1,
+        remaining_count: 1,
+      });
+      expect(dataSource.transaction).toHaveBeenCalled();
+    });
+
+    it('should reassign all members and archive source group', async () => {
+      setupHappyPath();
+      const dto = {
+        assignments: [
+          { user_id: USER_ID, target_group_id: TARGET_GROUP_ID },
+          { user_id: OTHER_USER_ID, target_group_id: TARGET_GROUP_ID_2 },
+        ],
+        archive_source: true,
+      };
+      // Two target groups
+      groupRepo.find.mockResolvedValue([mockTargetGroup, mockTargetGroup2]);
+      membershipRepo.createQueryBuilder = jest.fn(() => {
+        const qb = {
+          select: jest.fn().mockReturnThis(),
+          addSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          groupBy: jest.fn().mockReturnThis(),
+          getRawMany: jest.fn().mockResolvedValue([
+            { group_id: TARGET_GROUP_ID, count: 2 },
+            { group_id: TARGET_GROUP_ID_2, count: 3 },
+          ]),
+        };
+        return qb;
+      });
+
+      const result = await service.reassignMembers(
+        GROUP_ID,
+        dto,
+        LECTURER_ID,
+        Role.LECTURER,
+      );
+
+      expect(result.archived).toBe(true);
+      expect(result.reassigned_count).toBe(2);
+      expect(result.remaining_count).toBe(0);
+    });
+
+    it('should allow ADMIN regardless of class ownership', async () => {
+      setupHappyPath();
+
+      const result = await service.reassignMembers(
+        GROUP_ID,
+        baseDto,
+        'some-admin-id',
+        Role.ADMIN,
+      );
+
+      expect(result.reassigned_count).toBe(1);
+    });
+
+    it('should throw BadRequest if source group has no class_id', async () => {
+      groupRepo.findOne.mockResolvedValue({ ...mockGroup, class_id: null });
+
+      await expect(
+        service.reassignMembers(GROUP_ID, baseDto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw Forbidden if requester is not the class lecturer', async () => {
+      groupRepo.findOne.mockResolvedValue(mockGroup);
+      classRepo.findOne.mockResolvedValue({
+        ...mockClass,
+        lecturer_id: 'someone-else',
+      });
+
+      await expect(
+        service.reassignMembers(GROUP_ID, baseDto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('should throw BadRequest for duplicate user_ids in assignments', async () => {
+      groupRepo.findOne.mockResolvedValue(mockGroup);
+      classRepo.findOne.mockResolvedValue(mockClass);
+      membershipRepo.find.mockResolvedValue([
+        leaderMembership,
+        memberMembership,
+      ]);
+
+      const dto = {
+        assignments: [
+          { user_id: OTHER_USER_ID, target_group_id: TARGET_GROUP_ID },
+          { user_id: OTHER_USER_ID, target_group_id: TARGET_GROUP_ID_2 },
+        ],
+      };
+
+      await expect(
+        service.reassignMembers(GROUP_ID, dto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequest if user_id is not an active member', async () => {
+      groupRepo.findOne.mockResolvedValue(mockGroup);
+      classRepo.findOne.mockResolvedValue(mockClass);
+      membershipRepo.find.mockResolvedValue([leaderMembership]);
+
+      const dto = {
+        assignments: [
+          { user_id: THIRD_USER_ID, target_group_id: TARGET_GROUP_ID },
+        ],
+      };
+
+      await expect(
+        service.reassignMembers(GROUP_ID, dto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequest when moving last leader while members remain', async () => {
+      groupRepo.findOne.mockResolvedValue(mockGroup);
+      classRepo.findOne.mockResolvedValue(mockClass);
+      membershipRepo.find.mockResolvedValue([
+        leaderMembership,
+        memberMembership,
+      ]);
+
+      // Try to move the leader out, leaving the member behind
+      const dto = {
+        assignments: [{ user_id: USER_ID, target_group_id: TARGET_GROUP_ID }],
+      };
+
+      await expect(
+        service.reassignMembers(GROUP_ID, dto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should allow moving last leader when no members remain', async () => {
+      // Only the leader in the group
+      groupRepo.findOne.mockResolvedValue(mockGroup);
+      classRepo.findOne.mockResolvedValue(mockClass);
+      membershipRepo.find.mockResolvedValue([leaderMembership]);
+      groupRepo.find.mockResolvedValue([mockTargetGroup]);
+      membershipRepo.createQueryBuilder = jest.fn(() => ({
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest
+          .fn()
+          .mockResolvedValue([{ group_id: TARGET_GROUP_ID, count: 2 }]),
+      }));
+      membershipRepo.findOne.mockResolvedValue(null);
+
+      const dto = {
+        assignments: [{ user_id: USER_ID, target_group_id: TARGET_GROUP_ID }],
+      };
+
+      const result = await service.reassignMembers(
+        GROUP_ID,
+        dto,
+        LECTURER_ID,
+        Role.LECTURER,
+      );
+
+      expect(result.remaining_count).toBe(0);
+      expect(result.reassigned_count).toBe(1);
+    });
+
+    it('should throw BadRequest when archive_source but members remain', async () => {
+      setupHappyPath();
+      const dto = { ...baseDto, archive_source: true };
+
+      await expect(
+        service.reassignMembers(GROUP_ID, dto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw NotFound if target group does not exist', async () => {
+      setupHappyPath();
+      groupRepo.find.mockResolvedValue([]); // no target groups found
+
+      await expect(
+        service.reassignMembers(GROUP_ID, baseDto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw BadRequest if target group is not ACTIVE', async () => {
+      setupHappyPath();
+      groupRepo.find.mockResolvedValue([
+        { ...mockTargetGroup, status: GroupStatus.ARCHIVED },
+      ]);
+
+      await expect(
+        service.reassignMembers(GROUP_ID, baseDto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequest if target group is in a different class', async () => {
+      setupHappyPath();
+      groupRepo.find.mockResolvedValue([
+        { ...mockTargetGroup, class_id: 'different-class-id' },
+      ]);
+
+      await expect(
+        service.reassignMembers(GROUP_ID, baseDto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequest if target group would exceed max members', async () => {
+      setupHappyPath();
+      // Target group already has 5 members (at max)
+      membershipRepo.createQueryBuilder = jest.fn(() => ({
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        groupBy: jest.fn().mockReturnThis(),
+        getRawMany: jest
+          .fn()
+          .mockResolvedValue([{ group_id: TARGET_GROUP_ID, count: 5 }]),
+      }));
+
+      await expect(
+        service.reassignMembers(GROUP_ID, baseDto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw BadRequest if member is already active in target group', async () => {
+      setupHappyPath();
+      // Member already active in target
+      membershipRepo.findOne.mockResolvedValue({
+        group_id: TARGET_GROUP_ID,
+        user_id: OTHER_USER_ID,
+        left_at: null,
+      });
+
+      await expect(
+        service.reassignMembers(GROUP_ID, baseDto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('should throw NotFoundException for non-existent source group', async () => {
+      groupRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.reassignMembers(GROUP_ID, baseDto, LECTURER_ID, Role.LECTURER),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

@@ -26,9 +26,9 @@ export class TaskWriteRateLimitGuard implements CanActivate {
     const now = Date.now();
     const key = `task-write:${userId}`;
     const existing =
-      TaskWriteRateLimitGuard.hits.get(key)?.filter(
-        (timestamp) => now - timestamp < WINDOW_MS,
-      ) || [];
+      TaskWriteRateLimitGuard.hits
+        .get(key)
+        ?.filter((timestamp) => now - timestamp < WINDOW_MS) || [];
 
     if (existing.length >= MAX_REQUESTS) {
       this.logger.warn(

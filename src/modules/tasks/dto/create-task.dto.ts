@@ -1,5 +1,12 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsISO8601, IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import {
+  IsISO8601,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+} from 'class-validator';
 import { TaskPriority, TaskStatus } from '../../../common/enums';
 import { IsEnum } from 'class-validator';
 
@@ -17,7 +24,9 @@ export class CreateTaskDto {
   @MaxLength(255)
   title: string;
 
-  @ApiPropertyOptional({ example: 'Return pagination and assignee display name.' })
+  @ApiPropertyOptional({
+    example: 'Return pagination and assignee display name.',
+  })
   @IsString()
   @IsOptional()
   description?: string;

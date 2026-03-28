@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import {
+  Class,
   Group,
   GroupMembership,
   GroupRepository,
@@ -16,6 +17,7 @@ import { GroupsService } from './groups.service';
 @Module({
   imports: [
     TypeOrmModule.forFeature([
+      Class,
       Group,
       GroupMembership,
       GroupRepository,

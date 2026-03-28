@@ -46,4 +46,3 @@ export class ImportRowLog {
   @JoinColumn({ name: 'batch_id' })
   batch: ImportBatch;
 }
-

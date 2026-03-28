@@ -6,12 +6,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, In, IsNull, Repository } from 'typeorm';
+import { Brackets, DataSource, In, IsNull, Repository } from 'typeorm';
 import { ERROR_MESSAGES } from '../../common/constants';
 import {
+  Class,
   Group,
   GroupMembership,
   GroupRepository,
+  GroupStatus,
   IntegrationProvider,
   IntegrationToken,
   MembershipRole,
@@ -25,6 +27,7 @@ import { AddMemberDto } from './dto/add-member.dto';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { QueryGroupsDto } from './dto/query-groups.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
+import { ReassignMembersDto } from './dto/reassign-members.dto';
 import { UpdateMemberDto } from './dto/update-member.dto';
 
 @Injectable()
@@ -44,6 +47,9 @@ export class GroupsService {
     private readonly groupRepoRepository: Repository<GroupRepository>,
     @InjectRepository(IntegrationToken)
     private readonly integrationTokenRepository: Repository<IntegrationToken>,
+    @InjectRepository(Class)
+    private readonly classRepository: Repository<Class>,
+    private readonly dataSource: DataSource,
     private readonly githubService: GithubService,
     private readonly jiraService: JiraService,
   ) {}
@@ -560,6 +566,225 @@ export class GroupsService {
       { group_id: groupId, user_id: userId },
       { left_at: new Date() },
     );
+  }
+
+  // ── Reassignment ───────────────────────────────────────
+
+  async reassignMembers(
+    sourceGroupId: string,
+    dto: ReassignMembersDto,
+    requesterId: string,
+    requesterRole: Role,
+  ) {
+    const sourceGroup = await this.assertGroupExists(sourceGroupId);
+
+    if (!sourceGroup.class_id) {
+      throw new BadRequestException(
+        ERROR_MESSAGES.GROUPS.SOURCE_GROUP_NOT_IN_CLASS,
+      );
+    }
+
+    // Authorization: must be the class lecturer or ADMIN
+    if (requesterRole !== Role.ADMIN) {
+      const cls = await this.classRepository.findOne({
+        where: { id: sourceGroup.class_id },
+      });
+      if (!cls || cls.lecturer_id !== requesterId) {
+        throw new ForbiddenException(ERROR_MESSAGES.GROUPS.NOT_CLASS_LECTURER);
+      }
+    }
+
+    // Fetch class for max_students_per_group
+    const cls = await this.classRepository.findOne({
+      where: { id: sourceGroup.class_id },
+    });
+    if (!cls) {
+      throw new NotFoundException(ERROR_MESSAGES.CLASSES.NOT_FOUND);
+    }
+
+    // Fetch active members of source group
+    const activeMembers = await this.membershipRepository.find({
+      where: { group_id: sourceGroupId, left_at: IsNull() },
+    });
+
+    const activeMemberIds = new Set(activeMembers.map((m) => m.user_id));
+    const dtoUserIds = dto.assignments.map((a) => a.user_id);
+
+    // Check for duplicate user_ids
+    if (new Set(dtoUserIds).size !== dtoUserIds.length) {
+      throw new BadRequestException(
+        ERROR_MESSAGES.GROUPS.DUPLICATE_MEMBER_IN_ASSIGNMENTS,
+      );
+    }
+
+    // Validate all specified users are active members
+    for (const userId of dtoUserIds) {
+      if (!activeMemberIds.has(userId)) {
+        throw new BadRequestException(
+          ERROR_MESSAGES.GROUPS.MEMBER_NOT_IN_SOURCE_GROUP,
+        );
+      }
+    }
+
+    const movingUserIds = new Set(dtoUserIds);
+    const remainingMembers = activeMembers.filter(
+      (m) => !movingUserIds.has(m.user_id),
+    );
+
+    // Leader protection: if remaining members exist, ensure at least one leader stays
+    if (remainingMembers.length > 0) {
+      const leadersBeingMoved = activeMembers.filter(
+        (m) =>
+          movingUserIds.has(m.user_id) &&
+          m.role_in_group === MembershipRole.LEADER,
+      );
+      const totalLeaders = activeMembers.filter(
+        (m) => m.role_in_group === MembershipRole.LEADER,
+      ).length;
+
+      if (leadersBeingMoved.length >= totalLeaders) {
+        throw new BadRequestException(
+          ERROR_MESSAGES.GROUPS.CANNOT_MOVE_LAST_LEADER,
+        );
+      }
+    }
+
+    // Archive validation
+    if (dto.archive_source && remainingMembers.length > 0) {
+      throw new BadRequestException(
+        ERROR_MESSAGES.GROUPS.CANNOT_ARCHIVE_NON_EMPTY_GROUP,
+      );
+    }
+
+    // Validate target groups
+    const targetGroupIds = [
+      ...new Set(dto.assignments.map((a) => a.target_group_id)),
+    ];
+
+    const targetGroups = await this.groupRepository.find({
+      where: { id: In(targetGroupIds) },
+    });
+
+    if (targetGroups.length !== targetGroupIds.length) {
+      throw new NotFoundException(ERROR_MESSAGES.GROUPS.TARGET_GROUP_NOT_FOUND);
+    }
+
+    for (const tg of targetGroups) {
+      if (tg.status !== GroupStatus.ACTIVE) {
+        throw new BadRequestException(
+          ERROR_MESSAGES.GROUPS.TARGET_GROUP_NOT_ACTIVE,
+        );
+      }
+      if (tg.class_id !== sourceGroup.class_id) {
+        throw new BadRequestException(
+          ERROR_MESSAGES.GROUPS.TARGET_GROUP_NOT_IN_SAME_CLASS,
+        );
+      }
+    }
+
+    // Count current members per target group
+    const countRows = await this.membershipRepository
+      .createQueryBuilder('m')
+      .select('m.group_id', 'group_id')
+      .addSelect('COUNT(*)::int', 'count')
+      .where('m.group_id IN (:...ids)', { ids: targetGroupIds })
+      .andWhere('m.left_at IS NULL')
+      .groupBy('m.group_id')
+      .getRawMany<{ group_id: string; count: number }>();
+
+    const currentCountMap = new Map(
+      countRows.map((r) => [r.group_id, Number(r.count)]),
+    );
+
+    // Calculate incoming members per target group
+    const incomingCountMap = new Map<string, number>();
+    for (const a of dto.assignments) {
+      incomingCountMap.set(
+        a.target_group_id,
+        (incomingCountMap.get(a.target_group_id) || 0) + 1,
+      );
+    }
+
+    for (const [groupId, incoming] of incomingCountMap) {
+      const current = currentCountMap.get(groupId) || 0;
+      if (current + incoming > cls.max_students_per_group) {
+        throw new BadRequestException(
+          ERROR_MESSAGES.GROUPS.TARGET_GROUP_WOULD_EXCEED_MAX,
+        );
+      }
+    }
+
+    // Check no member is already active in their target group
+    for (const a of dto.assignments) {
+      const existing = await this.membershipRepository.findOne({
+        where: {
+          group_id: a.target_group_id,
+          user_id: a.user_id,
+          left_at: IsNull(),
+        },
+      });
+      if (existing) {
+        throw new BadRequestException(
+          ERROR_MESSAGES.GROUPS.MEMBER_ALREADY_IN_TARGET_GROUP,
+        );
+      }
+    }
+
+    // Execute transaction
+    await this.dataSource.transaction(async (manager) => {
+      const now = new Date();
+
+      // Soft-delete moved members from source group
+      for (const userId of movingUserIds) {
+        await manager.update(
+          GroupMembership,
+          { group_id: sourceGroupId, user_id: userId },
+          { left_at: now },
+        );
+      }
+
+      // Create or reactivate memberships in target groups
+      for (const a of dto.assignments) {
+        const existingRow = await manager.findOne(GroupMembership, {
+          where: { group_id: a.target_group_id, user_id: a.user_id },
+        });
+
+        if (existingRow) {
+          await manager.update(
+            GroupMembership,
+            { group_id: a.target_group_id, user_id: a.user_id },
+            {
+              left_at: null,
+              role_in_group: MembershipRole.MEMBER,
+              joined_at: now,
+            },
+          );
+        } else {
+          const membership = manager.create(GroupMembership, {
+            group_id: a.target_group_id,
+            user_id: a.user_id,
+            role_in_group: MembershipRole.MEMBER,
+          });
+          await manager.save(membership);
+        }
+      }
+
+      // Archive source group if requested
+      if (dto.archive_source) {
+        await manager.update(
+          Group,
+          { id: sourceGroupId },
+          { status: GroupStatus.ARCHIVED },
+        );
+      }
+    });
+
+    return {
+      message: 'Members reassigned successfully',
+      archived: dto.archive_source || false,
+      reassigned_count: dto.assignments.length,
+      remaining_count: remainingMembers.length,
+    };
   }
 
   // ── Helpers ────────────────────────────────────────────

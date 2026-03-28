@@ -34,7 +34,8 @@ describe('TasksController (e2e)', () => {
   class MockJwtGuard implements CanActivate {
     canActivate(context: ExecutionContext): boolean {
       const req = context.switchToHttp().getRequest();
-      req.user = req.headers['x-user-scope'] === 'member' ? memberUser : leaderUser;
+      req.user =
+        req.headers['x-user-scope'] === 'member' ? memberUser : leaderUser;
       return true;
     }
   }
@@ -145,7 +146,9 @@ describe('TasksController (e2e)', () => {
     });
 
     await request(app.getHttpServer())
-      .get('/tasks?group_id=11111111-1111-1111-1111-111111111111&status=DONE&search=search')
+      .get(
+        '/tasks?group_id=11111111-1111-1111-1111-111111111111&status=DONE&search=search',
+      )
       .expect(200)
       .expect(({ body }) => {
         expect(body.meta.total).toBe(1);

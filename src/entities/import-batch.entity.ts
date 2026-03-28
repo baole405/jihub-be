@@ -59,4 +59,3 @@ export class ImportBatch {
   @OneToMany(() => ImportRowLog, (row) => row.batch)
   rows: ImportRowLog[];
 }
-

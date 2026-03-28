@@ -26,6 +26,23 @@ export const ERROR_MESSAGES = {
     CANNOT_LEAVE_AS_LAST_LEADER:
       'You are the last leader. Assign another leader before leaving.',
     ONLY_LEADERS_CAN_MANAGE: 'Only group leaders can perform this action',
+    SOURCE_GROUP_NOT_IN_CLASS: 'Source group does not belong to any class',
+    NOT_CLASS_LECTURER: 'You are not the lecturer of this class',
+    MEMBER_NOT_IN_SOURCE_GROUP:
+      'One or more specified users are not active members of the source group',
+    DUPLICATE_MEMBER_IN_ASSIGNMENTS: 'Duplicate user_id found in assignments',
+    TARGET_GROUP_NOT_FOUND: 'One or more target groups not found',
+    TARGET_GROUP_NOT_ACTIVE: 'One or more target groups are not active',
+    TARGET_GROUP_NOT_IN_SAME_CLASS:
+      'All target groups must be in the same class as the source group',
+    TARGET_GROUP_WOULD_EXCEED_MAX:
+      'Reassignment would exceed the maximum group size',
+    MEMBER_ALREADY_IN_TARGET_GROUP:
+      'A member is already active in their assigned target group',
+    CANNOT_MOVE_LAST_LEADER:
+      'Cannot move the last leader while other members remain. Reassign the leader role first.',
+    CANNOT_ARCHIVE_NON_EMPTY_GROUP:
+      'Cannot archive the source group because it will still have remaining members',
   },
   TASKS: {
     NOT_FOUND: 'Task not found',

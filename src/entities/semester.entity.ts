@@ -56,16 +56,10 @@ export class Semester {
   @OneToMany(() => GroupReview, (review) => review.semester)
   group_reviews: GroupReview[];
 
-  @OneToMany(
-    () => TeachingAssignment,
-    (assignment) => assignment.semester,
-  )
+  @OneToMany(() => TeachingAssignment, (assignment) => assignment.semester)
   teaching_assignments: TeachingAssignment[];
 
-  @OneToMany(
-    () => ExaminerAssignment,
-    (assignment) => assignment.semester,
-  )
+  @OneToMany(() => ExaminerAssignment, (assignment) => assignment.semester)
   examiner_assignments: ExaminerAssignment[];
 
   @OneToMany(() => Conversation, (conversation) => conversation.semester)

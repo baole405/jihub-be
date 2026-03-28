@@ -73,6 +73,20 @@ export class GroupDetailEntity extends GroupEntity {
   members: GroupMemberEntity[];
 }
 
+export class ReassignMembersResponseEntity {
+  @ApiProperty({ example: 'Members reassigned successfully' })
+  message: string;
+
+  @ApiProperty({ example: false })
+  archived: boolean;
+
+  @ApiProperty({ example: 2 })
+  reassigned_count: number;
+
+  @ApiProperty({ example: 1 })
+  remaining_count: number;
+}
+
 export class PaginatedGroupsEntity {
   @ApiProperty({ type: [GroupEntity] })
   data: GroupEntity[];

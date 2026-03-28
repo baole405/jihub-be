@@ -64,7 +64,11 @@ export class EvaluationController {
     @Query() dto: QueryEvaluationsDto,
     @Req() req: AuthorizedRequest,
   ) {
-    return this.evaluationService.findAll(dto, req.user.id, req.user.role as Role);
+    return this.evaluationService.findAll(
+      dto,
+      req.user.id,
+      req.user.role as Role,
+    );
   }
 
   @Get(':id')
@@ -78,7 +82,11 @@ export class EvaluationController {
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: AuthorizedRequest,
   ) {
-    return this.evaluationService.findOne(id, req.user.id, req.user.role as Role);
+    return this.evaluationService.findOne(
+      id,
+      req.user.id,
+      req.user.role as Role,
+    );
   }
 
   @Patch(':id')
@@ -93,7 +101,12 @@ export class EvaluationController {
     @Body() dto: UpdateEvaluationDto,
     @Req() req: AuthorizedRequest,
   ) {
-    return this.evaluationService.update(id, dto, req.user.id, req.user.role as Role);
+    return this.evaluationService.update(
+      id,
+      dto,
+      req.user.id,
+      req.user.role as Role,
+    );
   }
 
   @Delete(':id')
@@ -106,7 +119,11 @@ export class EvaluationController {
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: AuthorizedRequest,
   ) {
-    return this.evaluationService.delete(id, req.user.id, req.user.role as Role);
+    return this.evaluationService.delete(
+      id,
+      req.user.id,
+      req.user.role as Role,
+    );
   }
 
   @Get(':id/my-contribution')

@@ -178,7 +178,10 @@ export class SemesterController {
         if (allowed.includes(file.mimetype)) {
           cb(null, true);
         } else {
-          cb(new BadRequestException('Only Excel/XLSX files are allowed.'), false);
+          cb(
+            new BadRequestException('Only Excel/XLSX files are allowed.'),
+            false,
+          );
         }
       },
     }),
