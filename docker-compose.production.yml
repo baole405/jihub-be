@@ -63,6 +63,11 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       ALLOWED_CORS_ORIGINS: ${ALLOWED_CORS_ORIGINS}
       GROQ_API_KEY: ${GROQ_API_KEY}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_FROM: ${SMTP_FROM}
     ports:
       - "${PORT}:${PORT}"
     depends_on:
