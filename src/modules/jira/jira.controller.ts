@@ -46,6 +46,23 @@ export class JiraController {
     return this.jiraService.checkProjectAccess(req.user.id, projectKey);
   }
 
+  @Get('projects/:projectKey/assignable')
+  @ApiOperation({
+    summary:
+      'Check if the current user is assignable (explicit project member) in a Jira project',
+  })
+  @ApiParam({ name: 'projectKey', example: 'SCRUM' })
+  @ApiResponse({
+    status: 200,
+    description: '{ assignable: true } if user can be assigned issues, { assignable: false } otherwise',
+  })
+  async checkAssignable(
+    @Req() req: AuthorizedRequest,
+    @Param('projectKey') projectKey: string,
+  ): Promise<{ assignable: boolean }> {
+    return this.jiraService.isAssignableInProject(req.user.id, projectKey);
+  }
+
   @Post('projects/link')
   @ApiOperation({ summary: 'Link a GitHub repository to a Jira project' })
   @ApiResponse({ status: 201, description: 'Project linked successfully' })

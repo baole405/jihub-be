@@ -502,6 +502,11 @@ describe('TasksService', () => {
   });
 
   it('rejects member updating fields outside allowed claim/status actions', async () => {
+    groupRepo.findOne.mockResolvedValue({
+      id: groupId,
+      jira_project_key: null,
+    });
+
     taskRepo.findOne.mockResolvedValue({
       id: taskId,
       group_id: groupId,

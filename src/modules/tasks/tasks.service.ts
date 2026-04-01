@@ -137,6 +137,7 @@ export class TasksService {
     const group = await this.assertGroupExists(dto.group_id);
     await this.assertCanManageGroup(dto.group_id, userId, userRole);
     await this.assertAssigneeInGroup(dto.group_id, dto.assignee_id);
+    await this.assertJiraAssignableAssignee(group, userId, dto.assignee_id);
 
     const status = this.normalizeStatus(
       dto.status || TaskStatus.TODO,
@@ -167,6 +168,7 @@ export class TasksService {
     dto: UpdateTaskDto,
   ) {
     const task = await this.getTaskOrThrow(taskId);
+    const group = await this.assertGroupExists(task.group_id);
     await this.assertCanViewGroup(task.group_id, userId);
 
     if (dto.group_id && dto.group_id !== task.group_id) {
@@ -175,6 +177,7 @@ export class TasksService {
 
     if (dto.assignee_id !== undefined) {
       await this.assertAssigneeInGroup(task.group_id, dto.assignee_id);
+      await this.assertJiraAssignableAssignee(group, userId, dto.assignee_id);
     }
 
     const allowedAsMember = await this.memberCanUpdate(
@@ -213,7 +216,6 @@ export class TasksService {
     });
 
     const updatedTask = await this.taskRepository.save(task);
-    const group = await this.assertGroupExists(task.group_id);
     await this.syncTaskToJira(userId, group, updatedTask);
     this.logTaskAction('update', userId, task.group_id, task.id);
     return this.getTaskForViewer(task.id, userId);
@@ -513,6 +515,42 @@ export class TasksService {
     });
     if (!user) {
       throw new BadRequestException(ERROR_MESSAGES.TASKS.ASSIGNEE_NOT_IN_GROUP);
+    }
+  }
+
+  private async assertJiraAssignableAssignee(
+    group: Group,
+    requestingUserId: string,
+    assigneeId?: string | null,
+  ) {
+    if (!group.jira_project_key || !assigneeId) {
+      return;
+    }
+
+    const jiraAssigneeAccountId = await this.getJiraAccountIdByUserId(assigneeId);
+    if (!jiraAssigneeAccountId) {
+      throw new BadRequestException(
+        'Assignee must link Jira account before being assigned in a Jira-synced group.',
+      );
+    }
+
+    const syncUserId = await this.resolveSyncUserId(group.id, requestingUserId);
+    if (!syncUserId) {
+      throw new BadRequestException(
+        'No Jira account available to validate assignment for this group.',
+      );
+    }
+
+    const assignable = await this.jiraService.isAccountAssignableInProject(
+      syncUserId,
+      group.jira_project_key,
+      jiraAssigneeAccountId,
+    );
+
+    if (!assignable) {
+      throw new BadRequestException(
+        `Selected user is not assignable in Jira project ${group.jira_project_key}.`,
+      );
     }
   }
 

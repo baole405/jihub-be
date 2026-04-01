@@ -624,6 +624,73 @@ export class JiraService {
     }
   }
 
+  async isAccountAssignableInProject(
+    userId: string,
+    projectKey: string,
+    jiraAccountId: string,
+  ): Promise<boolean> {
+    try {
+      return await this.executeWithJiraContext(
+        userId,
+        `Failed to check assignable status for project ${projectKey}.`,
+        async ({ accessToken, cloudId }) => {
+          const response = await lastValueFrom(
+            this.httpService.get<unknown[]>(
+              `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/user/assignable/search`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  Accept: 'application/json',
+                },
+                params: {
+                  project: projectKey,
+                  accountId: jiraAccountId,
+                  maxResults: 1,
+                },
+              },
+            ),
+          );
+          return Array.isArray(response.data) && response.data.length > 0;
+        },
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Check whether the current user is assignable (explicitly a project member)
+   * using GET /rest/api/3/user/assignable/search?project={key}&accountId={id}&maxResults=1
+   * This is more accurate than validateProjectAccess for Open projects because
+   * it checks the permission scheme's "Assignable User" grant, not just read access.
+   */
+  async isAssignableInProject(
+    userId: string,
+    projectKey: string,
+  ): Promise<{ assignable: boolean }> {
+    try {
+      // Resolve the calling user's own Jira accountId from their token
+      const token = await this.integrationTokenRepository.findOne({
+        where: { user_id: userId, provider: IntegrationProvider.JIRA },
+        select: { provider_user_id: true },
+      });
+
+      if (!token?.provider_user_id) {
+        return { assignable: false };
+      }
+
+      const result = await this.isAccountAssignableInProject(
+        userId,
+        projectKey,
+        token.provider_user_id,
+      );
+
+      return { assignable: result };
+    } catch {
+      return { assignable: false };
+    }
+  }
+
   async validateProjectAccess(userId: string, projectKey: string) {
     return this.executeWithJiraContext(
       userId,
