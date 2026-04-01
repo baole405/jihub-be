@@ -22,6 +22,10 @@ describe('SemesterController admin roster (e2e)', () => {
     getImportBatches: jest.fn(),
     processImport: jest.fn(),
     getSemesterRoster: jest.fn(),
+    listSemesterClasses: jest.fn(),
+    createSemesterClass: jest.fn(),
+    updateSemesterClass: jest.fn(),
+    deleteSemesterClass: jest.fn(),
     createSemesterLecturer: jest.fn(),
     updateSemesterLecturer: jest.fn(),
     deleteSemesterLecturer: jest.fn(),
@@ -92,6 +96,21 @@ describe('SemesterController admin roster (e2e)', () => {
         assignments: [{ class_id: 'class-1', lecturer_id: 'lecturer-1' }],
       })
       .expect(200);
+  });
+
+  it('creates semester class happy path', async () => {
+    semesterService.createSemesterClass.mockResolvedValue({
+      id: 'class-1',
+      code: 'SWP391-1004',
+    });
+
+    await request(app.getHttpServer())
+      .post('/admin/semesters/11111111-1111-1111-1111-111111111111/classes')
+      .send({
+        code: 'SWP391-1004',
+        name: 'SWP391 1004',
+      })
+      .expect(201);
   });
 
   it('rejects examiner own-class conflict', async () => {

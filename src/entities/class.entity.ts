@@ -30,8 +30,8 @@ export class Class {
   @Column({ type: 'varchar', length: 50, nullable: true })
   semester: string | null;
 
-  @Column({ type: 'uuid' })
-  lecturer_id: string;
+  @Column({ type: 'uuid', nullable: true })
+  lecturer_id: string | null;
 
   @Column({ type: 'varchar', length: 100 })
   enrollment_key: string;
@@ -53,7 +53,7 @@ export class Class {
 
   @ManyToOne(() => User, (user) => user.lectured_classes)
   @JoinColumn({ name: 'lecturer_id' })
-  lecturer: User;
+  lecturer: User | null;
 
   @OneToMany(() => Group, (group) => group.class)
   groups: Group[];

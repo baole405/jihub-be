@@ -28,10 +28,12 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { BulkExaminerAssignmentDto } from './dto/bulk-examiner-assignment.dto';
 import { BulkTeachingAssignmentDto } from './dto/bulk-teaching-assignment.dto';
+import { CreateSemesterClassDto } from './dto/create-semester-class.dto';
 import { CreateSemesterLecturerDto } from './dto/create-semester-lecturer.dto';
 import { CreateSemesterStudentDto } from './dto/create-semester-student.dto';
 import { CreateSemesterDto } from './dto/create-semester.dto';
 import { UpdateSemesterLecturerDto } from './dto/update-semester-lecturer.dto';
+import { UpdateSemesterClassDto } from './dto/update-semester-class.dto';
 import { UpdateSemesterStudentDto } from './dto/update-semester-student.dto';
 import { UpdateSemesterDto } from './dto/update-semester.dto';
 import { SemesterService } from './semester.service';
@@ -78,6 +80,40 @@ export class SemesterController {
   })
   async getSemesterRoster(@Param('id', ParseUUIDPipe) id: string) {
     return this.semesterService.getSemesterRoster(id);
+  }
+
+  @Get(':id/classes')
+  @ApiOperation({ summary: 'List classes managed under a semester' })
+  async listSemesterClasses(@Param('id', ParseUUIDPipe) id: string) {
+    return this.semesterService.listSemesterClasses(id);
+  }
+
+  @Post(':id/classes')
+  @ApiOperation({ summary: 'Create a class within a semester' })
+  async createSemesterClass(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateSemesterClassDto,
+  ) {
+    return this.semesterService.createSemesterClass(id, dto);
+  }
+
+  @Patch(':id/classes/:classId')
+  @ApiOperation({ summary: 'Update code/name metadata for a semester class' })
+  async updateSemesterClass(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('classId', ParseUUIDPipe) classId: string,
+    @Body() dto: UpdateSemesterClassDto,
+  ) {
+    return this.semesterService.updateSemesterClass(id, classId, dto);
+  }
+
+  @Delete(':id/classes/:classId')
+  @ApiOperation({ summary: 'Delete a class from a semester when safe' })
+  async deleteSemesterClass(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('classId', ParseUUIDPipe) classId: string,
+  ) {
+    return this.semesterService.deleteSemesterClass(id, classId);
   }
 
   @Post(':id/roster/lecturers')

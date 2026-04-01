@@ -40,7 +40,10 @@ export class ClassController {
 
   @Post()
   @Roles(Role.LECTURER)
-  @ApiOperation({ summary: 'Create a new class (Lecturer only)' })
+  @ApiOperation({
+    summary:
+      'Legacy endpoint disabled: class creation must be done by Admin inside semester management',
+  })
   @ApiResponse({
     status: 201,
     description:

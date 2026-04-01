@@ -66,6 +66,14 @@ A robust backend API built with NestJS framework, featuring comprehensive authen
 
 Admin semester roster management is exposed under ` /api/admin/semesters/:semesterId `:
 
+- `GET /classes`
+  - lists classes in the selected semester
+- `POST /classes`
+  - creates a new class inside the selected semester
+- `PATCH /classes/:classId`
+  - updates class code, name, or enrollment key
+- `DELETE /classes/:classId`
+  - deletes a semester class only when it has no students, groups, or assignment data
 - `GET /roster`
   - returns semester roster snapshot for lecturers, students, and classes
 - `POST /roster/lecturers`
@@ -89,6 +97,7 @@ Admin semester roster management is exposed under ` /api/admin/semesters/:semest
 
 Key rules:
 
+- Legacy lecturer class creation endpoint is blocked; class creation is Admin-only inside semester management.
 - Semester roster editing is allowed only for `UPCOMING` and `ACTIVE`.
 - Examiner assignment opens only when `semester.current_week >= 10`.
 - A lecturer cannot examine a class they are currently teaching.

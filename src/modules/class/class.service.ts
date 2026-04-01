@@ -8,8 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { randomBytes } from 'crypto';
-import { In, Repository } from 'typeorm';
-import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
+import { Repository } from 'typeorm';
 import { DocumentStatus } from '../../common/enums';
 import { ERROR_MESSAGES } from '../../common/constants';
 import { ClassMembership } from '../../entities/class-membership.entity';
@@ -49,47 +48,16 @@ export class ClassService {
   ) {}
 
   async createClass(lecturerId: string, dto: CreateClassDto) {
-    // 1. Generate Enrollment Key
-    const enrollmentKey = randomBytes(4).toString('hex').toUpperCase();
-
-    // 2. Create the Class
-    const newClass = this.classRepo.create({
-      code: dto.code,
-      name: dto.name,
-      semester: dto.semester,
-      lecturer_id: lecturerId,
-      enrollment_key: enrollmentKey,
-    });
-    const savedClass = await this.classRepo.save(newClass);
-
-    // 3. Auto-generate 7 Empty Groups
-    const groupsToCreate: QueryDeepPartialEntity<Group>[] = [];
-    for (let i = 1; i <= 7; i++) {
-      groupsToCreate.push({
-        name: `Group ${i}`,
-        class_id: savedClass.id,
-        created_by_id: lecturerId, // using lecturer as the original creator
-      });
-    }
-    await this.groupRepo.insert(groupsToCreate);
-
-    // 4. Send Notifications to students
-    if (dto.studentEmails && dto.studentEmails.length > 0) {
-      const students = await this.userRepo.find({
-        where: { email: In(dto.studentEmails) },
-      });
-
-      if (students.length > 0) {
-        const notifications = students.map((student) => ({
-          user_id: student.id,
-          title: `You are invited to join ${dto.code}`,
-          message: `Lecturer has invited you to join ${dto.code}. Your enrollment key is: ${enrollmentKey}`,
-        }));
-        await this.notifRepo.insert(notifications);
-      }
-    }
-
-    return savedClass;
+    this.logger.warn(
+      JSON.stringify({
+        event: 'legacy_lecturer_class_create_blocked',
+        lecturer_id: lecturerId,
+        code: dto.code,
+      }),
+    );
+    throw new ForbiddenException(
+      'Class creation is Admin-only and must be managed under a semester.',
+    );
   }
 
   async getAllClasses(userId: string, role: string) {

@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ClassMembership } from '../../entities/class-membership.entity';
@@ -48,6 +48,17 @@ describe('ClassService', () => {
     }).compile();
 
     service = module.get<ClassService>(ClassService);
+  });
+
+  it('blocks legacy lecturer class creation flow', async () => {
+    await expect(
+      service.createClass('lecturer-1', {
+        code: 'SWP391-1004',
+        name: 'SWP391 1004',
+        semester: 'SP26',
+        studentEmails: [],
+      }),
+    ).rejects.toThrow(ForbiddenException);
   });
 
   describe('importStudents', () => {

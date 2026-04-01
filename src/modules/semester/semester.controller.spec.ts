@@ -14,6 +14,10 @@ describe('SemesterController', () => {
       getImportBatches: jest.fn(),
       processImport: jest.fn(),
       getSemesterRoster: jest.fn(),
+      listSemesterClasses: jest.fn(),
+      createSemesterClass: jest.fn(),
+      updateSemesterClass: jest.fn(),
+      deleteSemesterClass: jest.fn(),
       createSemesterLecturer: jest.fn(),
       updateSemesterLecturer: jest.fn(),
       deleteSemesterLecturer: jest.fn(),
@@ -42,6 +46,20 @@ describe('SemesterController', () => {
 
     expect(semesterService.getSemesterRoster).toHaveBeenCalledWith(
       '11111111-1111-1111-1111-111111111111',
+    );
+  });
+
+  it('delegates semester class creation', async () => {
+    semesterService.createSemesterClass.mockResolvedValue({ id: 'class-1' });
+
+    await controller.createSemesterClass(
+      '11111111-1111-1111-1111-111111111111',
+      { code: 'SWP391-1004', name: 'SWP391 1004' },
+    );
+
+    expect(semesterService.createSemesterClass).toHaveBeenCalledWith(
+      '11111111-1111-1111-1111-111111111111',
+      { code: 'SWP391-1004', name: 'SWP391 1004' },
     );
   });
 

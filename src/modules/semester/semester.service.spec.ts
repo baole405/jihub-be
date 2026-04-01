@@ -231,6 +231,65 @@ describe('SemesterService', () => {
     expect(semesterRepo.findOne).toHaveBeenCalledTimes(1);
   });
 
+  it('creates a semester-scoped class without assigning a lecturer', async () => {
+    semesterRepo.findOne.mockResolvedValue({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 1,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+    classRepo.findOne.mockResolvedValueOnce(null);
+    classRepo.save.mockResolvedValue({
+      id: 'class-9',
+      code: 'SWP391-1009',
+      name: 'SWP391 1009',
+      semester: 'SP26',
+      lecturer_id: null,
+      lecturer: null,
+      enrollment_key: 'ABCD1234',
+    });
+
+    const result = await service.createSemesterClass('semester-1', {
+      code: 'swp391-1009',
+      name: 'SWP391 1009',
+    });
+
+    expect(result).toMatchObject({
+      id: 'class-9',
+      code: 'SWP391-1009',
+      lecturer_id: null,
+    });
+  });
+
+  it('blocks deleting a class that still has semester data attached', async () => {
+    semesterRepo.findOne.mockResolvedValue({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 1,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+    classRepo.findOne.mockResolvedValue({
+      id: 'class-1',
+      code: 'SWP391-1001',
+      name: 'SWP391 1001',
+      semester: 'SP26',
+    });
+    classMembershipRepo.count.mockResolvedValue(1);
+    groupRepo.count.mockResolvedValue(0);
+    teachingAssignmentRepo.findOne.mockResolvedValue(null);
+    examinerAssignmentRepo.count.mockResolvedValue(0);
+
+    await expect(
+      service.deleteSemesterClass('semester-1', 'class-1'),
+    ).rejects.toThrow(ConflictException);
+  });
+
   it('falls back to upcoming or latest semester when no active semester exists', async () => {
     semesterRepo.findOne
       .mockResolvedValueOnce(null)

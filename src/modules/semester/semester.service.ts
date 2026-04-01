@@ -37,9 +37,11 @@ import {
 import { GithubService } from '../github/github.service';
 import { BulkExaminerAssignmentDto } from './dto/bulk-examiner-assignment.dto';
 import { BulkTeachingAssignmentDto } from './dto/bulk-teaching-assignment.dto';
+import { CreateSemesterClassDto } from './dto/create-semester-class.dto';
 import { CreateSemesterLecturerDto } from './dto/create-semester-lecturer.dto';
 import { CreateSemesterStudentDto } from './dto/create-semester-student.dto';
 import { CreateSemesterDto } from './dto/create-semester.dto';
+import { UpdateSemesterClassDto } from './dto/update-semester-class.dto';
 import { UpdateSemesterLecturerDto } from './dto/update-semester-lecturer.dto';
 import { UpdateSemesterStudentDto } from './dto/update-semester-student.dto';
 import { UpdateSemesterDto } from './dto/update-semester.dto';
@@ -51,6 +53,9 @@ type WeekGateStatus = 'PASS' | 'FAIL';
 type ReviewMilestoneStatus = 'PENDING' | 'REVIEWED';
 type RosterErrorCode =
   | 'CLASS_NOT_IN_SEMESTER'
+  | 'CLASS_ALREADY_EXISTS'
+  | 'CLASS_NOT_FOUND'
+  | 'CLASS_DELETE_CONFLICT'
   | 'SEMESTER_NOT_EDITABLE'
   | 'LECTURER_ALREADY_EXISTS'
   | 'LECTURER_NOT_FOUND'
@@ -1077,23 +1082,15 @@ export class SemesterService {
 
     const classRows = classes.map((classItem) => {
       const teachingAssignment = teachingByClassId.get(classItem.id);
-      const teachingLecturer =
-        teachingAssignment?.lecturer || classItem.lecturer;
       const classExaminers = examinerByClassId.get(classItem.id) || [];
       return {
-        id: classItem.id,
-        code: classItem.code,
-        name: classItem.name,
-        lecturer_id: teachingLecturer?.id || classItem.lecturer_id,
-        lecturer_name: teachingLecturer?.full_name || null,
+        ...this.buildSemesterClassRow(
+          classItem,
+          teachingAssignment,
+          classExaminers,
+        ),
         student_count: (studentMembershipsByClassId.get(classItem.id) || [])
           .length,
-        examiner_assignments: classExaminers.map((assignment) => ({
-          lecturer_id: assignment.lecturer_id,
-          lecturer_name:
-            assignment.lecturer?.full_name || assignment.lecturer?.email,
-          lecturer_email: assignment.lecturer?.email || null,
-        })),
       };
     });
 
@@ -1165,6 +1162,125 @@ export class SemesterService {
       students: studentRows,
       classes: classRows,
     };
+  }
+
+  async listSemesterClasses(semesterId: string) {
+    const semester = await this.getSemesterOrThrow(semesterId);
+    const roster = await this.getSemesterRoster(semester.id);
+    return {
+      semester: roster.semester,
+      classes: roster.classes,
+    };
+  }
+
+  async createSemesterClass(
+    semesterId: string,
+    dto: CreateSemesterClassDto,
+  ) {
+    const semester = await this.getSemesterOrThrow(semesterId);
+    this.assertSemesterRosterEditable(semester);
+
+    const code = dto.code.trim().toUpperCase();
+    const name = dto.name.trim();
+    const existing = await this.classRepository.findOne({
+      where: { semester: semester.code, code },
+    });
+    if (existing) {
+      throw this.buildConflict(
+        'CLASS_ALREADY_EXISTS',
+        `Class ${code} already exists in this semester.`,
+      );
+    }
+
+    const created = await this.classRepository.save(
+      this.classRepository.create({
+        code,
+        name,
+        semester: semester.code,
+        lecturer_id: null,
+        enrollment_key:
+          dto.enrollment_key?.trim() ||
+          randomBytes(4).toString('hex').toUpperCase(),
+      }),
+    );
+
+    return this.buildSemesterClassRow(created, null, []);
+  }
+
+  async updateSemesterClass(
+    semesterId: string,
+    classId: string,
+    dto: UpdateSemesterClassDto,
+  ) {
+    const semester = await this.getSemesterOrThrow(semesterId);
+    this.assertSemesterRosterEditable(semester);
+    const targetClass = await this.getSemesterClassOrThrow(semester.code, classId);
+
+    if (dto.code?.trim()) {
+      const nextCode = dto.code.trim().toUpperCase();
+      const existing = await this.classRepository.findOne({
+        where: { semester: semester.code, code: nextCode },
+      });
+      if (existing && existing.id !== targetClass.id) {
+        throw this.buildConflict(
+          'CLASS_ALREADY_EXISTS',
+          `Class ${nextCode} already exists in this semester.`,
+        );
+      }
+      targetClass.code = nextCode;
+    }
+
+    if (dto.name?.trim()) {
+      targetClass.name = dto.name.trim();
+    }
+
+    if (dto.enrollment_key?.trim()) {
+      targetClass.enrollment_key = dto.enrollment_key.trim().toUpperCase();
+    }
+
+    const saved = await this.classRepository.save(targetClass);
+    const teachingAssignment = await this.teachingAssignmentRepository.findOne({
+      where: { class_id: saved.id },
+      relations: ['lecturer'],
+    });
+    const examinerAssignments = await this.examinerAssignmentRepository.find({
+      where: { semester_id: semester.id, class_id: saved.id },
+      relations: ['lecturer'],
+    });
+
+    return this.buildSemesterClassRow(saved, teachingAssignment, examinerAssignments);
+  }
+
+  async deleteSemesterClass(semesterId: string, classId: string) {
+    const semester = await this.getSemesterOrThrow(semesterId);
+    this.assertSemesterRosterEditable(semester);
+    const targetClass = await this.getSemesterClassOrThrow(semester.code, classId);
+
+    const [studentCount, groupCount, teachingAssignment, examinerCount] =
+      await Promise.all([
+        this.classMembershipRepository.count({ where: { class_id: targetClass.id } }),
+        this.groupRepository.count({ where: { class_id: targetClass.id } }),
+        this.teachingAssignmentRepository.findOne({ where: { class_id: targetClass.id } }),
+        this.examinerAssignmentRepository.count({
+          where: { semester_id: semester.id, class_id: targetClass.id },
+        }),
+      ]);
+
+    if (studentCount > 0 || groupCount > 0 || teachingAssignment || examinerCount > 0) {
+      throw this.buildConflict(
+        'CLASS_DELETE_CONFLICT',
+        'Class cannot be deleted while it still has students, groups, or assignments.',
+        {
+          student_count: studentCount,
+          group_count: groupCount,
+          has_teaching_assignment: Boolean(teachingAssignment),
+          examiner_assignment_count: examinerCount,
+        },
+      );
+    }
+
+    await this.classRepository.delete({ id: targetClass.id });
+    return { success: true };
   }
 
   async createSemesterLecturer(
@@ -2249,6 +2365,29 @@ export class SemesterService {
       select: { id: true } as any,
     });
     return classes.map((classItem) => classItem.id);
+  }
+
+  private buildSemesterClassRow(
+    classItem: Class,
+    teachingAssignment?: TeachingAssignment | null,
+    examinerAssignments: ExaminerAssignment[] = [],
+  ) {
+    const teachingLecturer = teachingAssignment?.lecturer || classItem.lecturer;
+    return {
+      id: classItem.id,
+      code: classItem.code,
+      name: classItem.name,
+      lecturer_id: teachingLecturer?.id || classItem.lecturer_id,
+      lecturer_name: teachingLecturer?.full_name || null,
+      student_count: 0,
+      enrollment_key: classItem.enrollment_key,
+      examiner_assignments: examinerAssignments.map((assignment) => ({
+        lecturer_id: assignment.lecturer_id,
+        lecturer_name:
+          assignment.lecturer?.full_name || assignment.lecturer?.email,
+        lecturer_email: assignment.lecturer?.email || null,
+      })),
+    };
   }
 
   private async getSemesterClassOrThrow(semesterCode: string, classId: string) {
