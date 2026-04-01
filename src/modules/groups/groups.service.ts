@@ -265,13 +265,24 @@ export class GroupsService {
     const userRole =
       membersCount === 0 ? MembershipRole.LEADER : MembershipRole.MEMBER;
 
-    const membership = this.membershipRepository.create({
-      group_id: groupId,
-      user_id: userId,
-      role_in_group: userRole,
+    const existing = await this.membershipRepository.findOne({
+      where: { group_id: groupId, user_id: userId },
     });
 
-    await this.membershipRepository.save(membership);
+    if (existing) {
+      await this.membershipRepository.update(
+        { group_id: groupId, user_id: userId },
+        { left_at: null, role_in_group: userRole, joined_at: new Date() },
+      );
+    } else {
+      const membership = this.membershipRepository.create({
+        group_id: groupId,
+        user_id: userId,
+        role_in_group: userRole,
+      });
+      await this.membershipRepository.save(membership);
+    }
+
     return { message: 'Joined group successfully', role_assigned: userRole };
   }
 

@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
+  ApiParam,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -27,6 +28,22 @@ export class JiraController {
   @ApiResponse({ status: 200, description: 'List of Jira projects' })
   async getProjects(@Req() req: AuthorizedRequest): Promise<JiraProject[]> {
     return this.jiraService.getProjects(req.user.id);
+  }
+
+  @Get('projects/:projectKey/access')
+  @ApiOperation({
+    summary: 'Check if the current user has access to a Jira project',
+  })
+  @ApiParam({ name: 'projectKey', example: 'SCRUM' })
+  @ApiResponse({
+    status: 200,
+    description: '{ has_access: true } if accessible, { has_access: false } otherwise',
+  })
+  async checkProjectAccess(
+    @Req() req: AuthorizedRequest,
+    @Param('projectKey') projectKey: string,
+  ): Promise<{ has_access: boolean }> {
+    return this.jiraService.checkProjectAccess(req.user.id, projectKey);
   }
 
   @Post('projects/link')

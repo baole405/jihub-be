@@ -612,6 +612,18 @@ export class JiraService {
     );
   }
 
+  async checkProjectAccess(
+    userId: string,
+    projectKey: string,
+  ): Promise<{ has_access: boolean }> {
+    try {
+      await this.validateProjectAccess(userId, projectKey);
+      return { has_access: true };
+    } catch {
+      return { has_access: false };
+    }
+  }
+
   async validateProjectAccess(userId: string, projectKey: string) {
     return this.executeWithJiraContext(
       userId,
@@ -725,60 +737,83 @@ export class JiraService {
       userId,
       `Failed to transition Jira issue ${issueKey}.`,
       async ({ accessToken, cloudId }) => {
-        const transitionsResponse = await lastValueFrom(
-          this.httpService.get<JiraTransitionsResponse>(
-            `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`,
-            {
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                Accept: 'application/json',
+        // Jira only exposes transitions available from the *current* state.
+        // TO DO → DONE requires an intermediate step: TO DO → IN PROGRESS → DONE.
+        // We resolve the required chain based on target status.
+        const STATUS_NAMES: Record<string, string[]> = {
+          TODO: ['to do', 'todo', 'open', 'selected for development'],
+          IN_PROGRESS: ['in progress', 'doing', 'started'],
+          DONE: ['done', 'resolved', 'closed'],
+          BLOCKED: ['blocked'],
+        };
+
+        // Steps to execute in order to reach the target status.
+        // For DONE: try IN_PROGRESS first (in case task is still TODO), then DONE.
+        // applyTransition skips silently if the transition is not available from current state,
+        // so if the task is already IN_PROGRESS the first step is a no-op.
+        const chain: string[] =
+          targetStatus === 'DONE'
+            ? ['IN_PROGRESS', 'DONE']
+            : [targetStatus];
+
+        const applyTransition = async (stepStatus: string): Promise<boolean> => {
+          const res = await lastValueFrom(
+            this.httpService.get<JiraTransitionsResponse>(
+              `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  Accept: 'application/json',
+                },
               },
-            },
-          ),
-        );
-
-        const transitions = transitionsResponse.data.transitions || [];
-        const targetNames =
-          targetStatus === 'TODO'
-            ? ['to do', 'todo', 'open', 'selected for development']
-            : targetStatus === 'IN_PROGRESS'
-              ? ['in progress', 'doing', 'started']
-              : targetStatus === 'DONE'
-                ? ['done', 'resolved', 'closed']
-                : ['blocked'];
-
-        const matched = transitions.find((transition) =>
-          targetNames.includes(transition.name.trim().toLowerCase()),
-        );
-
-        if (!matched) {
-          this.logger.warn(
-            JSON.stringify({
-              event: 'jira_transition_missing',
-              user_id: userId,
-              issue_key: issueKey,
-              target_status: targetStatus,
-              available_transitions: transitions.map((item) => item.name),
-            }),
+            ),
           );
-          return false;
-        }
 
-        await lastValueFrom(
-          this.httpService.post(
-            `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`,
-            {
-              transition: { id: matched.id },
-            },
-            {
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                Accept: 'application/json',
-                'Content-Type': 'application/json',
+          const transitions = res.data.transitions || [];
+          const names = STATUS_NAMES[stepStatus] ?? [];
+          const matched = transitions.find((t) =>
+            names.includes(t.name.trim().toLowerCase()),
+          );
+
+          if (!matched) {
+            this.logger.warn(
+              JSON.stringify({
+                event: 'jira_transition_missing',
+                user_id: userId,
+                issue_key: issueKey,
+                step: stepStatus,
+                available_transitions: transitions.map((t) => t.name),
+              }),
+            );
+            return false;
+          }
+
+          await lastValueFrom(
+            this.httpService.post(
+              `https://api.atlassian.com/ex/jira/${cloudId}/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`,
+              { transition: { id: matched.id } },
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  Accept: 'application/json',
+                  'Content-Type': 'application/json',
+                },
               },
-            },
-          ),
-        );
+            ),
+          );
+
+          return true;
+        };
+
+        for (let i = 0; i < chain.length; i++) {
+          const step = chain[i];
+          const isLastStep = i === chain.length - 1;
+          const ok = await applyTransition(step);
+          // Intermediate steps (e.g. IN_PROGRESS when task is already IN_PROGRESS)
+          // may not be available — that's fine, continue to next step.
+          // Only fail if the final target step is unavailable.
+          if (!ok && isLastStep) return false;
+        }
 
         return true;
       },
