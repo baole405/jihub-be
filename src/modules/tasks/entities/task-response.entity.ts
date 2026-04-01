@@ -36,6 +36,12 @@ export class TaskResponseEntity {
   @ApiProperty({ enum: TaskPriority, example: TaskPriority.HIGH })
   priority: TaskPriority;
 
+  @ApiPropertyOptional({
+    example: '22222222-2222-2222-2222-222222222222',
+    nullable: true,
+  })
+  assignee_id?: string | null;
+
   @ApiPropertyOptional({ example: 'Nguyen Van A', nullable: true })
   assignee_name?: string | null;
 

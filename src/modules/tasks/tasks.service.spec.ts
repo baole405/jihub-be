@@ -213,14 +213,20 @@ describe('TasksService', () => {
       })
       .mockResolvedValueOnce({
         group_id: groupId,
+        user_id: memberId,
+        role_in_group: MembershipRole.MEMBER,
+        left_at: null,
+      })
+      .mockResolvedValueOnce({
+        group_id: groupId,
         user_id: leaderId,
         role_in_group: MembershipRole.LEADER,
         left_at: null,
       })
       .mockResolvedValueOnce({
         group_id: groupId,
-        user_id: memberId,
-        role_in_group: MembershipRole.MEMBER,
+        user_id: leaderId,
+        role_in_group: MembershipRole.LEADER,
         left_at: null,
       });
     userRepo.findOne.mockResolvedValue({
@@ -343,5 +349,196 @@ describe('TasksService', () => {
     await expect(
       service.findAll(memberId, { group_id: groupId }),
     ).rejects.toThrow(NotFoundException);
+  });
+
+  it('allows member to change status of own assigned task', async () => {
+    taskRepo.findOne.mockResolvedValue({
+      id: taskId,
+      group_id: groupId,
+      title: 'Own task',
+      description: null,
+      status: TaskStatus.IN_PROGRESS,
+      priority: TaskPriority.MEDIUM,
+      assignee_id: memberId,
+      due_at: null,
+      deleted_at: null,
+    });
+
+    membershipRepo.findOne
+      .mockResolvedValueOnce({
+        group_id: groupId,
+        user_id: memberId,
+        role_in_group: MembershipRole.MEMBER,
+        left_at: null,
+      })
+      .mockResolvedValueOnce({
+        group_id: groupId,
+        user_id: memberId,
+        role_in_group: MembershipRole.MEMBER,
+        left_at: null,
+      });
+
+    groupRepo.findOne.mockResolvedValue({
+      id: groupId,
+      jira_project_key: null,
+    });
+
+    taskRepo.save.mockResolvedValue({
+      id: taskId,
+      group_id: groupId,
+      title: 'Own task',
+      description: null,
+      status: TaskStatus.DONE,
+      priority: TaskPriority.MEDIUM,
+      assignee_id: memberId,
+      due_at: null,
+      deleted_at: null,
+    });
+
+    taskRepo._qb.getOne.mockResolvedValue({
+      id: taskId,
+      group_id: groupId,
+      title: 'Own task',
+      description: null,
+      status: TaskStatus.DONE,
+      priority: TaskPriority.MEDIUM,
+      assignee_id: memberId,
+      assignee: {
+        id: memberId,
+        full_name: 'Member A',
+        email: 'member@fpt.edu.vn',
+      },
+      created_at: new Date('2026-03-20T10:00:00.000Z'),
+      updated_at: new Date('2026-03-20T11:00:00.000Z'),
+    });
+
+    const result = await service.update(taskId, memberId, Role.STUDENT, {
+      status: TaskStatus.DONE,
+    });
+
+    expect(result.status).toBe(TaskStatus.DONE);
+    expect(result.assignee_id).toBe(memberId);
+  });
+
+  it('allows member to claim unassigned TODO task', async () => {
+    taskRepo.findOne.mockResolvedValue({
+      id: taskId,
+      group_id: groupId,
+      title: 'Claim me',
+      description: null,
+      status: TaskStatus.TODO,
+      priority: TaskPriority.MEDIUM,
+      assignee_id: null,
+      due_at: null,
+      deleted_at: null,
+    });
+
+    membershipRepo.findOne
+      .mockResolvedValueOnce({
+        group_id: groupId,
+        user_id: memberId,
+        role_in_group: MembershipRole.MEMBER,
+        left_at: null,
+      })
+      .mockResolvedValueOnce({
+        group_id: groupId,
+        user_id: memberId,
+        role_in_group: MembershipRole.MEMBER,
+        left_at: null,
+      })
+      .mockResolvedValueOnce({
+        group_id: groupId,
+        user_id: memberId,
+        role_in_group: MembershipRole.MEMBER,
+        left_at: null,
+      });
+
+    userRepo.findOne.mockResolvedValue({
+      id: memberId,
+      full_name: 'Member A',
+      email: 'member@fpt.edu.vn',
+    });
+
+    groupRepo.findOne.mockResolvedValue({
+      id: groupId,
+      jira_project_key: null,
+    });
+
+    taskRepo.save.mockResolvedValue({
+      id: taskId,
+      group_id: groupId,
+      title: 'Claim me',
+      description: null,
+      status: TaskStatus.IN_PROGRESS,
+      priority: TaskPriority.MEDIUM,
+      assignee_id: memberId,
+      due_at: null,
+      deleted_at: null,
+    });
+
+    taskRepo._qb.getOne.mockResolvedValue({
+      id: taskId,
+      group_id: groupId,
+      title: 'Claim me',
+      description: null,
+      status: TaskStatus.IN_PROGRESS,
+      priority: TaskPriority.MEDIUM,
+      assignee_id: memberId,
+      assignee: {
+        id: memberId,
+        full_name: 'Member A',
+        email: 'member@fpt.edu.vn',
+      },
+      created_at: new Date('2026-03-20T10:00:00.000Z'),
+      updated_at: new Date('2026-03-20T11:00:00.000Z'),
+    });
+
+    const result = await service.update(taskId, memberId, Role.STUDENT, {
+      assignee_id: memberId,
+    });
+
+    expect(result.assignee_id).toBe(memberId);
+    expect(result.status).toBe(TaskStatus.IN_PROGRESS);
+  });
+
+  it('rejects member updating fields outside allowed claim/status actions', async () => {
+    taskRepo.findOne.mockResolvedValue({
+      id: taskId,
+      group_id: groupId,
+      title: 'Own task',
+      description: null,
+      status: TaskStatus.IN_PROGRESS,
+      priority: TaskPriority.MEDIUM,
+      assignee_id: memberId,
+      due_at: null,
+      deleted_at: null,
+    });
+
+    membershipRepo.findOne
+      .mockResolvedValueOnce({
+        group_id: groupId,
+        user_id: memberId,
+        role_in_group: MembershipRole.MEMBER,
+        left_at: null,
+      })
+      .mockResolvedValueOnce({
+        group_id: groupId,
+        user_id: memberId,
+        role_in_group: MembershipRole.MEMBER,
+        left_at: null,
+      })
+      .mockResolvedValueOnce({
+        group_id: groupId,
+        user_id: memberId,
+        role_in_group: MembershipRole.MEMBER,
+        left_at: null,
+      });
+
+    await expect(
+      service.update(taskId, memberId, Role.STUDENT, {
+        status: TaskStatus.DONE,
+        title: 'Should not be allowed',
+      }),
+    ).rejects.toThrow(ForbiddenException);
   });
 });

@@ -168,7 +168,6 @@ export class TasksService {
   ) {
     const task = await this.getTaskOrThrow(taskId);
     await this.assertCanViewGroup(task.group_id, userId);
-    await this.assertCanManageGroup(task.group_id, userId, userRole);
 
     if (dto.group_id && dto.group_id !== task.group_id) {
       throw new BadRequestException('Changing task group is not supported.');
@@ -176,6 +175,16 @@ export class TasksService {
 
     if (dto.assignee_id !== undefined) {
       await this.assertAssigneeInGroup(task.group_id, dto.assignee_id);
+    }
+
+    const allowedAsMember = await this.memberCanUpdate(
+      task,
+      userId,
+      userRole,
+      dto,
+    );
+    if (!allowedAsMember) {
+      await this.assertCanManageGroup(task.group_id, userId, userRole);
     }
 
     Object.assign(task, {
@@ -251,11 +260,57 @@ export class TasksService {
       description: task.description,
       status: task.status,
       priority: task.priority,
+      assignee_id: task.assignee_id || null,
       assignee_name: task.assignee?.full_name || task.assignee?.email || null,
       due_at: task.due_at,
       created_at: task.created_at,
       updated_at: task.updated_at,
     };
+  }
+
+  private async memberCanUpdate(
+    task: Task,
+    userId: string,
+    userRole: Role,
+    dto: UpdateTaskDto,
+  ): Promise<boolean> {
+    if (userRole === Role.ADMIN) {
+      return false;
+    }
+
+    const membership = await this.membershipRepository.findOne({
+      where: { group_id: task.group_id, user_id: userId, left_at: IsNull() },
+    });
+
+    if (!membership || membership.role_in_group === MembershipRole.LEADER) {
+      return false;
+    }
+
+    if (task.assignee_id === userId) {
+      return (
+        dto.status !== undefined &&
+        dto.assignee_id === undefined &&
+        dto.title === undefined &&
+        dto.description === undefined &&
+        dto.priority === undefined &&
+        dto.due_at === undefined &&
+        dto.group_id === undefined
+      );
+    }
+
+    if (!task.assignee_id && task.status === TaskStatus.TODO) {
+      return (
+        dto.assignee_id === userId &&
+        dto.status === undefined &&
+        dto.title === undefined &&
+        dto.description === undefined &&
+        dto.priority === undefined &&
+        dto.due_at === undefined &&
+        dto.group_id === undefined
+      );
+    }
+
+    return false;
   }
 
   private async getTaskOrThrow(taskId: string) {
