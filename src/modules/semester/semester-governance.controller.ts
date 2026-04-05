@@ -35,7 +35,8 @@ export class SemesterGovernanceController {
 
   @Get('current-week')
   @ApiOperation({
-    summary: 'Get current semester week context for Lecturer/Admin/Student views',
+    summary:
+      'Get current semester week context for Lecturer/Admin/Student views',
   })
   async getCurrentWeek() {
     return this.semesterService.getCurrentWeek();

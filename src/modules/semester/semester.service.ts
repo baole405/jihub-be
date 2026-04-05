@@ -921,8 +921,9 @@ export class SemesterService {
 
     // Resolve milestone per group's class
     const groupResults: Array<
-      { class_id: string; class_code: string; class_name: string } &
-        ReturnType<typeof this.serializeReviewGroup>
+      { class_id: string; class_code: string; class_name: string } & ReturnType<
+        typeof this.serializeReviewGroup
+      >
     > = [];
     for (const group of currentGroups) {
       const classMilestone = await this.resolveClassCheckpoint(
@@ -944,10 +945,15 @@ export class SemesterService {
         ...this.serializeReviewGroup(
           group,
           reviewMap.get(group.id),
-          milestone,
+          classMilestone,
           true,
         ),
-      })),
+      });
+    }
+
+    return {
+      semester: this.serializeSemester(semester),
+      groups: groupResults,
     };
   }
 
@@ -1036,9 +1042,7 @@ export class SemesterService {
 
     // Fetch checkpoint configs for all classes the student is in
     // Key by "classId:milestoneCode" to avoid cross-class collisions
-    const classIds = [
-      ...new Set(currentGroups.map((g) => g.class_id)),
-    ];
+    const classIds = [...new Set(currentGroups.map((g) => g.class_id))];
     const allCheckpoints =
       classIds.length > 0
         ? await this.classCheckpointRepository.find({
@@ -1057,9 +1061,7 @@ export class SemesterService {
     }
 
     // Build a map from group_id to class_id for lookup
-    const groupClassMap = new Map(
-      currentGroups.map((g) => [g.id, g.class_id]),
-    );
+    const groupClassMap = new Map(currentGroups.map((g) => [g.id, g.class_id]));
 
     // Group by milestone
     const milestoneMap = new Map<

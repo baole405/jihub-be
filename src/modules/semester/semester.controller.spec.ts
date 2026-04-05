@@ -40,9 +40,7 @@ describe('SemesterController', () => {
   it('delegates roster lookup', async () => {
     semesterService.getSemesterRoster.mockResolvedValue({ lecturers: [] });
 
-    await controller.getSemesterRoster(
-      '11111111-1111-1111-1111-111111111111',
-    );
+    await controller.getSemesterRoster('11111111-1111-1111-1111-111111111111');
 
     expect(semesterService.getSemesterRoster).toHaveBeenCalledWith(
       '11111111-1111-1111-1111-111111111111',
