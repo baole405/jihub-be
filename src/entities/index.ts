@@ -5,6 +5,7 @@ export {
   MembershipRole,
   Role,
 } from '../common/enums';
+export * from './class-checkpoint.entity';
 export * from './class-membership.entity';
 export * from './class.entity';
 export * from './conversation.entity';

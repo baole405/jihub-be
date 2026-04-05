@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { SemesterStatus } from '../common/enums/semester-status.enum';
+import { ClassCheckpoint } from './class-checkpoint.entity';
 import { Conversation } from './conversation.entity';
 import { ExaminerAssignment } from './examiner-assignment.entity';
 import { GroupReview } from './group-review.entity';
@@ -64,4 +65,7 @@ export class Semester {
 
   @OneToMany(() => Conversation, (conversation) => conversation.semester)
   conversations: Conversation[];
+
+  @OneToMany(() => ClassCheckpoint, (checkpoint) => checkpoint.semester)
+  checkpoints: ClassCheckpoint[];
 }

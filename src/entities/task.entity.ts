@@ -24,7 +24,7 @@ import { User } from './user.entity';
 @Index('IDX_TASK_GROUP_STATUS', ['group_id', 'status'])
 export class Task {
   @PrimaryGeneratedColumn('uuid')
-  id: string;
+  id!: string;
 
   @Column({ type: 'uuid' })
   group_id: string;

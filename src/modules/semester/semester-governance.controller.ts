@@ -35,7 +35,8 @@ export class SemesterGovernanceController {
 
   @Get('current-week')
   @ApiOperation({
-    summary: 'Get current semester week context for Lecturer/Admin/Student views',
+    summary:
+      'Get current semester week context for Lecturer/Admin/Student views',
   })
   async getCurrentWeek() {
     return this.semesterService.getCurrentWeek();
@@ -43,10 +44,17 @@ export class SemesterGovernanceController {
 
   @Get('current/review-milestone')
   @ApiOperation({
-    summary: 'Get current milestone window mapped from semester week',
+    summary:
+      'Get current milestone window mapped from semester week. Pass classId for class-specific checkpoint resolution.',
   })
-  async getCurrentReviewMilestone() {
-    return this.semesterService.getCurrentReviewMilestone();
+  @ApiQuery({
+    name: 'classId',
+    required: false,
+    description:
+      'Optional class UUID — when provided, resolves the checkpoint from class-specific configuration',
+  })
+  async getCurrentReviewMilestone(@Query('classId') classId?: string) {
+    return this.semesterService.getCurrentReviewMilestone(classId);
   }
 
   @Patch(':id/current-week')

@@ -10,6 +10,7 @@ import {
 } from '../../common/enums';
 import {
   Class,
+  ClassCheckpoint,
   ClassMembership,
   ExaminerAssignment,
   Group,
@@ -24,6 +25,7 @@ import {
   TeachingAssignment,
   User,
 } from '../../entities';
+import { ClassCheckpointService } from '../class/class-checkpoint.service';
 import { GithubService } from '../github/github.service';
 import { SemesterService } from './semester.service';
 
@@ -55,8 +57,10 @@ describe('SemesterService', () => {
   let groupReviewRepo: ReturnType<typeof createMockRepository>;
   let taskRepo: ReturnType<typeof createMockRepository>;
   let weekAuditRepo: ReturnType<typeof createMockRepository>;
+  let classCheckpointRepo: ReturnType<typeof createMockRepository>;
   let userRepo: ReturnType<typeof createMockRepository>;
   let configService: { get: jest.Mock };
+  let classCheckpointService: { ensureCheckpointsExist: jest.Mock };
   let githubService: { getRepoCommits: jest.Mock };
 
   beforeEach(async () => {
@@ -73,9 +77,33 @@ describe('SemesterService', () => {
     groupReviewRepo = createMockRepository();
     taskRepo = createMockRepository();
     weekAuditRepo = createMockRepository();
+    classCheckpointRepo = createMockRepository();
     userRepo = createMockRepository();
     configService = { get: jest.fn() };
+    classCheckpointService = { ensureCheckpointsExist: jest.fn() };
     githubService = { getRepoCommits: jest.fn() };
+
+    classCheckpointRepo.find.mockResolvedValue([]);
+    classCheckpointService.ensureCheckpointsExist.mockResolvedValue([
+      {
+        checkpoint_number: 1,
+        deadline_week: 3,
+        milestone_code: ReviewMilestoneCode.REVIEW_1,
+        description: null,
+      },
+      {
+        checkpoint_number: 2,
+        deadline_week: 8,
+        milestone_code: ReviewMilestoneCode.REVIEW_2,
+        description: null,
+      },
+      {
+        checkpoint_number: 3,
+        deadline_week: 10,
+        milestone_code: ReviewMilestoneCode.REVIEW_3,
+        description: null,
+      },
+    ]);
 
     batchRepo.save.mockImplementation(async (entity) => ({
       id: entity.id ?? 'batch-1',
@@ -165,7 +193,12 @@ describe('SemesterService', () => {
           provide: getRepositoryToken(SemesterWeekAuditLog),
           useValue: weekAuditRepo,
         },
+        {
+          provide: getRepositoryToken(ClassCheckpoint),
+          useValue: classCheckpointRepo,
+        },
         { provide: getRepositoryToken(User), useValue: userRepo },
+        { provide: ClassCheckpointService, useValue: classCheckpointService },
         { provide: GithubService, useValue: githubService },
       ],
     }).compile();
@@ -607,8 +640,8 @@ describe('SemesterService', () => {
     expect(result.semester?.current_week).toBe(7);
     expect(result.milestone).toEqual({
       code: ReviewMilestoneCode.REVIEW_2,
-      label: 'Review 2',
-      week_start: 7,
+      label: 'Checkpoint 2',
+      week_start: 4,
       week_end: 8,
     });
   });
@@ -688,7 +721,7 @@ describe('SemesterService', () => {
 
     expect(groupReviewRepo.save).toHaveBeenCalledWith(
       expect.objectContaining({
-        milestone_code: ReviewMilestoneCode.PROGRESS_TRACKING,
+        milestone_code: ReviewMilestoneCode.REVIEW_2,
         snapshot_task_total: 2,
         snapshot_task_done: 1,
         snapshot_commit_total: 3,
@@ -806,7 +839,9 @@ describe('SemesterService', () => {
       Role.LECTURER,
     );
 
-    expect(result.milestone?.code).toBe(ReviewMilestoneCode.REVIEW_3);
+    expect(result.classes[0].active_checkpoint?.code).toBe(
+      ReviewMilestoneCode.REVIEW_3,
+    );
     expect(result.summary.groups_missing_task_evidence).toBe(1);
     expect(result.summary.groups_missing_commit_evidence).toBe(1);
     expect(result.classes[0].groups[0].warnings).toEqual(
@@ -820,7 +855,7 @@ describe('SemesterService', () => {
       code: 'SP26',
       name: 'Spring 2026',
       status: SemesterStatus.ACTIVE,
-      current_week: 4,
+      current_week: 3,
       start_date: '2026-01-01',
       end_date: '2026-05-01',
     });
@@ -861,7 +896,7 @@ describe('SemesterService', () => {
 
     const result = await service.getStudentReviewStatus('student-1');
 
-    expect(result.milestone?.code).toBe(ReviewMilestoneCode.REVIEW_1);
+    expect(result.groups[0].milestone?.code).toBe(ReviewMilestoneCode.REVIEW_1);
     expect(result.groups[0]).toMatchObject({
       class_id: 'class-1',
       group_id: 'group-1',

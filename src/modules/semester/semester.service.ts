@@ -20,6 +20,7 @@ import {
 } from '../../common/enums';
 import {
   Class,
+  ClassCheckpoint,
   ClassMembership,
   ExaminerAssignment,
   Group,
@@ -34,6 +35,7 @@ import {
   TeachingAssignment,
   User,
 } from '../../entities';
+import { ClassCheckpointService } from '../class/class-checkpoint.service';
 import { GithubService } from '../github/github.service';
 import { BulkExaminerAssignmentDto } from './dto/bulk-examiner-assignment.dto';
 import { BulkTeachingAssignmentDto } from './dto/bulk-teaching-assignment.dto';
@@ -71,6 +73,8 @@ export interface ReviewMilestoneContext {
   label: string;
   week_start: number;
   week_end: number;
+  description?: string | null;
+  checkpoint_number?: number;
 }
 
 export interface SerializedSemester {
@@ -97,6 +101,8 @@ export class SemesterService {
     private readonly configService: ConfigService,
     @InjectRepository(Semester)
     private readonly semesterRepository: Repository<Semester>,
+    @InjectRepository(ClassCheckpoint)
+    private readonly classCheckpointRepository: Repository<ClassCheckpoint>,
     @InjectRepository(ImportBatch)
     private readonly importBatchRepository: Repository<ImportBatch>,
     @InjectRepository(ImportRowLog)
@@ -123,6 +129,7 @@ export class SemesterService {
     private readonly semesterWeekAuditLogRepository: Repository<SemesterWeekAuditLog>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly classCheckpointService: ClassCheckpointService,
     private readonly githubService: GithubService,
   ) {}
 
@@ -195,7 +202,7 @@ export class SemesterService {
     };
   }
 
-  async getCurrentReviewMilestone() {
+  async getCurrentReviewMilestone(classId?: string) {
     const semester = await this.getCurrentSemester();
 
     if (!semester) {
@@ -205,9 +212,17 @@ export class SemesterService {
       };
     }
 
+    const milestone = classId
+      ? await this.resolveClassCheckpoint(
+          semester.id,
+          classId,
+          semester.current_week,
+        )
+      : this.resolveReviewMilestoneFallback(semester.current_week);
+
     return {
       semester: this.serializeSemester(semester),
-      milestone: this.resolveReviewMilestone(semester.current_week),
+      milestone,
     };
   }
 
@@ -642,7 +657,6 @@ export class SemesterService {
       };
     }
 
-    const milestone = this.resolveReviewMilestone(semester.current_week);
     const classWhere =
       userRole === Role.ADMIN
         ? { semester: semester.code }
@@ -672,55 +686,90 @@ export class SemesterService {
           })
         : [];
 
-    const reviewMap = await this.getReviewMapForGroups(
-      semester.id,
-      milestone,
-      groups.map((group) => group.id),
-    );
+    // Resolve checkpoint per-class and build review maps per-class milestone
+    const classSummaries: Array<{
+      class_id: string;
+      class_code: string;
+      class_name: string;
+      active_checkpoint: ReviewMilestoneContext | null;
+      checkpoint_configs: Array<{
+        checkpoint_number: number;
+        milestone_code: ReviewMilestoneCode;
+        deadline_week: number;
+        description: string | null;
+      }>;
+      groups: ReturnType<typeof this.serializeReviewGroup>[];
+    }> = [];
+    let totalGroupsCount = 0;
+    let reviewedGroupsCount = 0;
+    let missingTaskCount = 0;
+    let missingCommitCount = 0;
 
-    const classSummaries = visibleClasses.map((targetClass) => ({
-      class_id: targetClass.id,
-      class_code: targetClass.code,
-      class_name: targetClass.name,
-      groups: groups
-        .filter((group) => group.class_id === targetClass.id)
-        .map((group) =>
-          this.serializeReviewGroup(group, reviewMap.get(group.id), milestone),
+    for (const targetClass of visibleClasses) {
+      const classMilestone = await this.resolveClassCheckpoint(
+        semester.id,
+        targetClass.id,
+        semester.current_week,
+      );
+
+      const classGroups = groups.filter(
+        (group) => group.class_id === targetClass.id,
+      );
+
+      const reviewMap = await this.getReviewMapForGroups(
+        semester.id,
+        classMilestone,
+        classGroups.map((group) => group.id),
+      );
+
+      // Fetch checkpoint configs for this class
+      const checkpointConfigs = await this.classCheckpointRepository.find({
+        where: { class_id: targetClass.id, semester_id: semester.id },
+        order: { checkpoint_number: 'ASC' },
+      });
+
+      const serializedGroups = classGroups.map((group) =>
+        this.serializeReviewGroup(
+          group,
+          reviewMap.get(group.id),
+          classMilestone,
         ),
-    }));
+      );
+
+      totalGroupsCount += serializedGroups.length;
+      reviewedGroupsCount += serializedGroups.filter(
+        (g) => g.review_status === 'REVIEWED',
+      ).length;
+      missingTaskCount += serializedGroups.filter((g) =>
+        g.warnings.includes('NO_TASK_EVIDENCE'),
+      ).length;
+      missingCommitCount += serializedGroups.filter((g) =>
+        g.warnings.includes('NO_COMMIT_EVIDENCE'),
+      ).length;
+
+      classSummaries.push({
+        class_id: targetClass.id,
+        class_code: targetClass.code,
+        class_name: targetClass.name,
+        active_checkpoint: classMilestone,
+        checkpoint_configs: checkpointConfigs.map((cp) => ({
+          checkpoint_number: cp.checkpoint_number,
+          milestone_code: cp.milestone_code,
+          deadline_week: cp.deadline_week,
+          description: cp.description,
+        })),
+        groups: serializedGroups,
+      });
+    }
 
     return {
       semester: this.serializeSemester(semester),
-      milestone,
       summary: {
         classes_total: classSummaries.length,
-        groups_total: classSummaries.reduce(
-          (sum, item) => sum + item.groups.length,
-          0,
-        ),
-        reviewed_groups: classSummaries.reduce(
-          (sum, item) =>
-            sum +
-            item.groups.filter((group) => group.review_status === 'REVIEWED')
-              .length,
-          0,
-        ),
-        groups_missing_task_evidence: classSummaries.reduce(
-          (sum, item) =>
-            sum +
-            item.groups.filter((group) =>
-              group.warnings.includes('NO_TASK_EVIDENCE'),
-            ).length,
-          0,
-        ),
-        groups_missing_commit_evidence: classSummaries.reduce(
-          (sum, item) =>
-            sum +
-            item.groups.filter((group) =>
-              group.warnings.includes('NO_COMMIT_EVIDENCE'),
-            ).length,
-          0,
-        ),
+        groups_total: totalGroupsCount,
+        reviewed_groups: reviewedGroupsCount,
+        groups_missing_task_evidence: missingTaskCount,
+        groups_missing_commit_evidence: missingCommitCount,
       },
       classes: classSummaries,
     };
@@ -738,13 +787,6 @@ export class SemesterService {
       throw new NotFoundException('No current semester is configured.');
     }
 
-    const milestone = this.resolveReviewMilestone(semester.current_week);
-    if (!milestone) {
-      throw new BadRequestException(
-        'No active review milestone is available for the current week.',
-      );
-    }
-
     const group = await this.groupRepository.findOne({
       where: { id: groupId },
       relations: ['class', 'topic'],
@@ -752,6 +794,21 @@ export class SemesterService {
 
     if (!group) {
       throw new NotFoundException('Group not found.');
+    }
+
+    if (!group.class_id) {
+      throw new BadRequestException('Group is not assigned to a class.');
+    }
+
+    const milestone = await this.resolveClassCheckpoint(
+      semester.id,
+      group.class_id,
+      semester.current_week,
+    );
+    if (!milestone) {
+      throw new BadRequestException(
+        'No active review milestone is available for the current week.',
+      );
     }
 
     if (
@@ -847,7 +904,6 @@ export class SemesterService {
       };
     }
 
-    const milestone = this.resolveReviewMilestone(semester.current_week);
     const groupMemberships = await this.groupMembershipRepository.find({
       where: {
         user_id: userId,
@@ -863,26 +919,41 @@ export class SemesterService {
           !!group && !!group.class && group.class.semester === semester.code,
       );
 
-    const reviewMap = await this.getReviewMapForGroups(
-      semester.id,
-      milestone,
-      currentGroups.map((group) => group.id),
-    );
+    // Resolve milestone per group's class
+    const groupResults: Array<
+      { class_id: string; class_code: string; class_name: string } & ReturnType<
+        typeof this.serializeReviewGroup
+      >
+    > = [];
+    for (const group of currentGroups) {
+      const classMilestone = await this.resolveClassCheckpoint(
+        semester.id,
+        group.class_id,
+        semester.current_week,
+      );
 
-    return {
-      semester: this.serializeSemester(semester),
-      milestone,
-      groups: currentGroups.map((group) => ({
+      const reviewMap = await this.getReviewMapForGroups(
+        semester.id,
+        classMilestone,
+        [group.id],
+      );
+
+      groupResults.push({
         class_id: group.class_id,
         class_code: group.class.code,
         class_name: group.class.name,
         ...this.serializeReviewGroup(
           group,
           reviewMap.get(group.id),
-          milestone,
+          classMilestone,
           true,
         ),
-      })),
+      });
+    }
+
+    return {
+      semester: this.serializeSemester(semester),
+      groups: groupResults,
     };
   }
 
@@ -969,6 +1040,29 @@ export class SemesterService {
       order: { week_start: 'ASC' },
     });
 
+    // Fetch checkpoint configs for all classes the student is in
+    // Key by "classId:milestoneCode" to avoid cross-class collisions
+    const classIds = [...new Set(currentGroups.map((g) => g.class_id))];
+    const allCheckpoints =
+      classIds.length > 0
+        ? await this.classCheckpointRepository.find({
+            where: {
+              class_id: In(classIds),
+              semester_id: semester.id,
+            },
+          })
+        : [];
+    const checkpointDescMap = new Map<string, string | null>();
+    for (const cp of allCheckpoints) {
+      checkpointDescMap.set(
+        `${cp.class_id}:${cp.milestone_code}`,
+        cp.description,
+      );
+    }
+
+    // Build a map from group_id to class_id for lookup
+    const groupClassMap = new Map(currentGroups.map((g) => [g.id, g.class_id]));
+
     // Group by milestone
     const milestoneMap = new Map<
       string,
@@ -977,6 +1071,11 @@ export class SemesterService {
 
     for (const review of publishedReviews) {
       const key = review.milestone_code;
+      const groupClassId = groupClassMap.get(review.group_id);
+      const descKey = groupClassId
+        ? `${groupClassId}:${review.milestone_code}`
+        : review.milestone_code;
+
       if (!milestoneMap.has(key)) {
         milestoneMap.set(key, {
           milestone: {
@@ -984,6 +1083,7 @@ export class SemesterService {
             label: this.getMilestoneLabel(review.milestone_code),
             week_start: review.week_start,
             week_end: review.week_end,
+            description: checkpointDescMap.get(descKey) ?? null,
           },
           groups: [],
         });
@@ -1020,7 +1120,7 @@ export class SemesterService {
 
   private getMilestoneLabel(code: ReviewMilestoneCode): string {
     const labels: Record<string, string> = {
-      REVIEW_1: 'Review 1',
+      REVIEW_1: 'Checkpoint 1',
       PROGRESS_TRACKING: 'Progress Tracking',
       REVIEW_2: 'Review 2',
       REVIEW_3: 'Review 3',
@@ -2177,46 +2277,91 @@ export class SemesterService {
     return !!group.topic_id || !!group.project_name?.trim();
   }
 
-  private resolveReviewMilestone(
+  /**
+   * Resolves the active checkpoint for a specific class based on its
+   * ClassCheckpoint configuration. Falls back to FINAL_PRESENTATION for the
+   * last 2 weeks of the semester.
+   */
+  private async resolveClassCheckpoint(
+    semesterId: string,
+    classId: string,
+    currentWeek: number,
+  ): Promise<ReviewMilestoneContext | null> {
+    const checkpoints =
+      await this.classCheckpointService.ensureCheckpointsExist(
+        classId,
+        semesterId,
+      );
+
+    // Check if we're in a checkpoint window.
+    // Each checkpoint is active from (previous checkpoint's deadline + 1) to its own deadline.
+    for (let i = 0; i < checkpoints.length; i++) {
+      const cp = checkpoints[i];
+      const weekStart = i === 0 ? 1 : checkpoints[i - 1].deadline_week + 1;
+      const weekEnd = cp.deadline_week;
+
+      if (currentWeek >= weekStart && currentWeek <= weekEnd) {
+        return {
+          code: cp.milestone_code,
+          label: this.getMilestoneLabel(cp.milestone_code),
+          week_start: weekStart,
+          week_end: weekEnd,
+          description: cp.description,
+          checkpoint_number: cp.checkpoint_number,
+        };
+      }
+    }
+
+    // After last checkpoint: check for FINAL_PRESENTATION window
+    const lastCheckpointWeek =
+      checkpoints.length > 0
+        ? checkpoints[checkpoints.length - 1].deadline_week
+        : 10;
+    if (currentWeek > lastCheckpointWeek) {
+      return {
+        code: ReviewMilestoneCode.FINAL_PRESENTATION,
+        label: 'Final Presentation',
+        week_start: lastCheckpointWeek + 1,
+        week_end: lastCheckpointWeek + 2,
+        description: null,
+      };
+    }
+
+    return null;
+  }
+
+  /**
+   * @deprecated Use resolveClassCheckpoint for class-specific resolution.
+   * Kept for backward compatibility with endpoints that don't have class context.
+   */
+  private resolveReviewMilestoneFallback(
     currentWeek: number,
   ): ReviewMilestoneContext | null {
-    if (currentWeek >= 3 && currentWeek <= 4) {
+    if (currentWeek >= 1 && currentWeek <= 3) {
       return {
         code: ReviewMilestoneCode.REVIEW_1,
-        label: 'Review 1',
-        week_start: 3,
-        week_end: 4,
+        label: 'Checkpoint 1',
+        week_start: 1,
+        week_end: 3,
       };
     }
-
-    if (currentWeek >= 5 && currentWeek <= 6) {
-      return {
-        code: ReviewMilestoneCode.PROGRESS_TRACKING,
-        label: 'Progress Tracking',
-        week_start: 5,
-        week_end: 6,
-      };
-    }
-
-    if (currentWeek >= 7 && currentWeek <= 8) {
+    if (currentWeek >= 4 && currentWeek <= 8) {
       return {
         code: ReviewMilestoneCode.REVIEW_2,
-        label: 'Review 2',
-        week_start: 7,
+        label: 'Checkpoint 2',
+        week_start: 4,
         week_end: 8,
       };
     }
-
     if (currentWeek >= 9 && currentWeek <= 10) {
       return {
         code: ReviewMilestoneCode.REVIEW_3,
-        label: 'Review 3',
+        label: 'Checkpoint 3',
         week_start: 9,
         week_end: 10,
       };
     }
-
-    if (currentWeek >= 11 && currentWeek <= 12) {
+    if (currentWeek >= 11) {
       return {
         code: ReviewMilestoneCode.FINAL_SCORE,
         label: 'Final Score',
@@ -2224,7 +2369,6 @@ export class SemesterService {
         week_end: 12,
       };
     }
-
     return null;
   }
 

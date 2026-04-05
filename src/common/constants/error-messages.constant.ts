@@ -72,6 +72,15 @@ export const ERROR_MESSAGES = {
     NOT_FOUND: 'Class not found',
     ACCESS_DENIED: 'You do not have permission to view this class',
   },
+  CHECKPOINTS: {
+    WEEKS_NOT_ASCENDING:
+      'Checkpoint deadline weeks must be strictly ascending (checkpoint 1 < 2 < 3).',
+    INVALID_CHECKPOINT_NUMBERS:
+      'Exactly 3 checkpoints (numbers 1, 2, 3) are required.',
+    PUBLISHED_GRADES_LOCKED:
+      'Cannot change deadline week — grades have already been published for this checkpoint.',
+    NO_ACTIVE_SEMESTER: 'No active semester found.',
+  },
   EVALUATIONS: {
     NOT_FOUND: 'Evaluation not found',
     GROUP_NOT_FOUND: 'Group not found',

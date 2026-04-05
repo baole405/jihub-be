@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import {
   Class,
+  ClassCheckpoint,
   ClassMembership,
   ExaminerAssignment,
   Group,
@@ -16,6 +17,7 @@ import {
   TeachingAssignment,
   User,
 } from '../../entities';
+import { ClassModule } from '../class/class.module';
 import { GithubModule } from '../github/github.module';
 import { SemesterController } from './semester.controller';
 import { SemesterGovernanceController } from './semester-governance.controller';
@@ -24,9 +26,11 @@ import { SemesterService } from './semester.service';
 
 @Module({
   imports: [
+    ClassModule,
     GithubModule,
     TypeOrmModule.forFeature([
       Semester,
+      ClassCheckpoint,
       ImportBatch,
       ImportRowLog,
       Class,

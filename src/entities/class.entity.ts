@@ -9,6 +9,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { ClassStatus } from '../common/enums';
+import { ClassCheckpoint } from './class-checkpoint.entity';
 import { ClassMembership } from './class-membership.entity';
 import { ExaminerAssignment } from './examiner-assignment.entity';
 import { Conversation } from './conversation.entity';
@@ -75,4 +76,7 @@ export class Class {
 
   @OneToMany(() => Conversation, (conversation) => conversation.class)
   conversations: Conversation[];
+
+  @OneToMany(() => ClassCheckpoint, (checkpoint) => checkpoint.class)
+  checkpoints: ClassCheckpoint[];
 }
