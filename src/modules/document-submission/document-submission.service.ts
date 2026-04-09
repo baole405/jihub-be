@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, Repository } from 'typeorm';
-import { Role } from '../../common/enums';
+import { DocumentStatus, Role } from '../../common/enums';
 import { DocumentSubmission } from '../../entities/document-submission.entity';
 import { GroupMembership } from '../../entities/group-membership.entity';
 import { CreateDocumentSubmissionDto } from './dto/create-submission.dto';
@@ -25,22 +25,43 @@ export class DocumentSubmissionService {
     userId: string,
     dto: CreateDocumentSubmissionDto,
   ) {
-    // Only Leader or members can submit? Let's say any member
+    return this.createSubmissionVersion(groupId, userId, dto, {
+      status: DocumentStatus.PENDING,
+    });
+  }
+
+  async saveDraftVersion(
+    groupId: string,
+    userId: string,
+    dto: CreateDocumentSubmissionDto,
+  ) {
+    return this.createSubmissionVersion(groupId, userId, dto, {
+      status: DocumentStatus.DRAFT,
+    });
+  }
+
+  async submitVersion(submissionId: string, userId: string) {
+    const submission = await this.submissionRepo.findOne({
+      where: { id: submissionId },
+    });
+
+    if (!submission) {
+      throw new NotFoundException('Submission not found');
+    }
+
     const membership = await this.membershipRepo.findOne({
-      where: { group_id: groupId, user_id: userId, left_at: IsNull() },
+      where: {
+        group_id: submission.group_id,
+        user_id: userId,
+        left_at: IsNull(),
+      },
     });
 
     if (!membership) {
       throw new ForbiddenException('You are not a member of this group');
     }
 
-    const submission = this.submissionRepo.create({
-      group_id: groupId,
-      submitted_by_id: userId,
-      title: dto.title,
-      document_url: dto.document_url,
-    });
-
+    submission.status = DocumentStatus.PENDING;
     return this.submissionRepo.save(submission);
   }
 
@@ -72,8 +93,8 @@ export class DocumentSubmissionService {
   async getGroupSubmissions(groupId: string) {
     return this.submissionRepo.find({
       where: { group_id: groupId },
-      relations: ['submittedBy'],
-      order: { created_at: 'DESC' },
+      relations: ['submittedBy', 'baseSubmission'],
+      order: { version_number: 'DESC', created_at: 'DESC' },
     });
   }
 
@@ -82,5 +103,40 @@ export class DocumentSubmissionService {
       relations: ['group', 'submittedBy'],
       order: { created_at: 'DESC' },
     });
+  }
+
+  private async createSubmissionVersion(
+    groupId: string,
+    userId: string,
+    dto: CreateDocumentSubmissionDto,
+    options: { status: DocumentStatus },
+  ) {
+    const membership = await this.membershipRepo.findOne({
+      where: { group_id: groupId, user_id: userId, left_at: IsNull() },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException('You are not a member of this group');
+    }
+
+    const latestVersion = await this.submissionRepo.findOne({
+      where: { group_id: groupId },
+      order: { version_number: 'DESC' },
+      select: { version_number: true },
+    });
+
+    const submission = this.submissionRepo.create({
+      group_id: groupId,
+      submitted_by_id: userId,
+      title: dto.title,
+      document_url: dto.document_url ?? dto.reference ?? null,
+      reference: dto.reference ?? dto.document_url ?? null,
+      change_summary: dto.change_summary ?? null,
+      base_submission_id: dto.base_submission_id ?? null,
+      version_number: (latestVersion?.version_number ?? 0) + 1,
+      status: options.status,
+    });
+
+    return this.submissionRepo.save(submission);
   }
 }
