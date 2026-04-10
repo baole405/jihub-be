@@ -9,7 +9,7 @@ import {
   Unique,
   UpdateDateColumn,
 } from 'typeorm';
-import { ReviewMilestoneCode } from '../common/enums';
+import { ReviewMilestoneCode, ReviewScoringFormula } from '../common/enums';
 import { Group } from './group.entity';
 import { Semester } from './semester.entity';
 import { User } from './user.entity';
@@ -56,6 +56,37 @@ export class GroupReview {
 
   @Column({ type: 'text', nullable: true })
   lecturer_note: string | null;
+
+  @Column({ type: 'numeric', precision: 5, scale: 2, nullable: true })
+  auto_score: number | null;
+
+  @Column({ type: 'numeric', precision: 5, scale: 2, nullable: true })
+  final_score: number | null;
+
+  @Column({ type: 'text', nullable: true })
+  override_reason: string | null;
+
+  @Column({
+    type: 'enum',
+    enum: ReviewScoringFormula,
+    nullable: true,
+  })
+  scoring_formula: ReviewScoringFormula | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  scoring_config_snapshot: Record<string, unknown> | null;
+
+  @Column({ type: 'int', default: 0 })
+  metric_total_problems: number;
+
+  @Column({ type: 'numeric', precision: 5, scale: 2, nullable: true })
+  metric_resolved_ratio: number | null;
+
+  @Column({ type: 'numeric', precision: 5, scale: 2, nullable: true })
+  metric_overdue_task_ratio: number | null;
+
+  @Column({ type: 'numeric', precision: 5, scale: 2, nullable: true })
+  metric_attendance_ratio: number | null;
 
   @Column({ type: 'int', default: 0 })
   snapshot_task_total: number;

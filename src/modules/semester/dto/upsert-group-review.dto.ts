@@ -1,5 +1,15 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  ArrayNotEmpty,
+  IsArray,
+  IsEnum,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
+import { ReviewScoringFormula } from '../../../common/enums';
 
 export class UpsertGroupReviewDto {
   @ApiPropertyOptional({
@@ -45,4 +55,40 @@ export class UpsertGroupReviewDto {
   @IsOptional()
   @IsString()
   lecturer_note?: string;
+
+  @ApiPropertyOptional({
+    enum: ReviewScoringFormula,
+    example: ReviewScoringFormula.ATTENDANCE_PROBLEM_CONTRIBUTION,
+  })
+  @IsOptional()
+  @IsEnum(ReviewScoringFormula)
+  scoring_formula?: ReviewScoringFormula;
+
+  @ApiPropertyOptional({
+    example: ['ATTENDANCE', 'PROBLEM_RESOLUTION', 'CONTRIBUTION'],
+    description: 'Only used when scoring_formula is CUSTOM_SELECTION.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  selected_metrics?: string[];
+
+  @ApiPropertyOptional({
+    example: 8.5,
+    description:
+      'Optional lecturer override over the computed auto score. Requires override_reason when different from auto score.',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(10)
+  final_score?: number;
+
+  @ApiPropertyOptional({
+    example: 'Auto score does not reflect the recovery work completed after the last review.',
+  })
+  @IsOptional()
+  @IsString()
+  override_reason?: string;
 }

@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { Role } from '../../common/enums';
+import { ReviewMilestoneCode, Role } from '../../common/enums';
 import { SemesterGovernanceController } from './semester-governance.controller';
 import { SemesterService } from './semester.service';
 
@@ -12,8 +12,16 @@ describe('SemesterGovernanceController', () => {
     getLecturerComplianceSummary: jest.Mock;
     getStudentWeeklyWarnings: jest.Mock;
     getLecturerReviewSummary: jest.Mock;
+    listReviewSessions: jest.Mock;
+    listGroupReviewSessions: jest.Mock;
+    listGroupReviewSessionHistory: jest.Mock;
+    createReviewSession: jest.Mock;
+    updateReviewSession: jest.Mock;
+    deleteReviewSession: jest.Mock;
     getStudentReviewStatus: jest.Mock;
     upsertCurrentGroupReview: jest.Mock;
+    publishMilestoneReviews: jest.Mock;
+    getStudentPublishedScores: jest.Mock;
   };
 
   beforeEach(async () => {
@@ -24,8 +32,16 @@ describe('SemesterGovernanceController', () => {
       getLecturerComplianceSummary: jest.fn(),
       getStudentWeeklyWarnings: jest.fn(),
       getLecturerReviewSummary: jest.fn(),
+      listReviewSessions: jest.fn(),
+      listGroupReviewSessions: jest.fn(),
+      listGroupReviewSessionHistory: jest.fn(),
+      createReviewSession: jest.fn(),
+      updateReviewSession: jest.fn(),
+      deleteReviewSession: jest.fn(),
       getStudentReviewStatus: jest.fn(),
       upsertCurrentGroupReview: jest.fn(),
+      publishMilestoneReviews: jest.fn(),
+      getStudentPublishedScores: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -111,6 +127,71 @@ describe('SemesterGovernanceController', () => {
         task_progress_score: 8,
         lecturer_note: 'Checkpoint updated',
       },
+    );
+  });
+
+  it('delegates review session CRUD and history methods', async () => {
+    semesterService.createReviewSession.mockResolvedValue({ id: 'session-1' });
+    semesterService.updateReviewSession.mockResolvedValue({ id: 'session-1' });
+    semesterService.deleteReviewSession.mockResolvedValue({ deleted: true });
+    semesterService.listGroupReviewSessions.mockResolvedValue({
+      sessions: [],
+    });
+    semesterService.listGroupReviewSessionHistory.mockResolvedValue({
+      history: [],
+    });
+
+    const request = {
+      user: { id: 'lecturer-1', role: Role.LECTURER },
+    } as any;
+
+    await controller.createReviewSession('group-1', request, {
+      milestone_code: ReviewMilestoneCode.REVIEW_1,
+      review_date: '2026-04-08T10:00:00.000Z',
+      title: 'Review 1 prep',
+    });
+    await controller.updateReviewSession('group-1', 'session-1', request, {
+      lecturer_note: 'Updated note',
+    });
+    await controller.deleteReviewSession('group-1', 'session-1', request);
+    await controller.listGroupReviewSessions('group-1', request);
+    await controller.listGroupReviewSessionHistory(
+      'group-1',
+      request,
+      ReviewMilestoneCode.REVIEW_1,
+    );
+
+    expect(semesterService.createReviewSession).toHaveBeenCalledWith(
+      'group-1',
+      'lecturer-1',
+      Role.LECTURER,
+      expect.objectContaining({
+        milestone_code: ReviewMilestoneCode.REVIEW_1,
+      }),
+    );
+    expect(semesterService.updateReviewSession).toHaveBeenCalledWith(
+      'group-1',
+      'session-1',
+      'lecturer-1',
+      Role.LECTURER,
+      expect.objectContaining({ lecturer_note: 'Updated note' }),
+    );
+    expect(semesterService.deleteReviewSession).toHaveBeenCalledWith(
+      'group-1',
+      'session-1',
+      'lecturer-1',
+      Role.LECTURER,
+    );
+    expect(semesterService.listGroupReviewSessions).toHaveBeenCalledWith(
+      'group-1',
+      'lecturer-1',
+      Role.LECTURER,
+    );
+    expect(semesterService.listGroupReviewSessionHistory).toHaveBeenCalledWith(
+      'group-1',
+      'lecturer-1',
+      Role.LECTURER,
+      ReviewMilestoneCode.REVIEW_1,
     );
   });
 });

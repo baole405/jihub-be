@@ -1,11 +1,11 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import { IsOptional, IsString } from 'class-validator';
 
-export class CreateDocumentSubmissionDto {
-  @ApiProperty({ example: 'SRS Document v1' })
+export class UpdateDocumentSubmissionDto {
+  @ApiPropertyOptional({ example: 'SRS Document v2' })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  title: string;
+  title?: string;
 
   @ApiPropertyOptional({
     example: 'https://docs.google.com/document/d/123/edit',
@@ -25,9 +25,8 @@ export class CreateDocumentSubmissionDto {
   reference?: string;
 
   @ApiPropertyOptional({
-    example: 'Added FR-12 checkout flow and refined NFR performance section.',
-    description:
-      'Optional short summary of what changed in this submission version.',
+    example: 'Refined scope and added acceptance criteria for FR-07.',
+    description: 'Optional short summary of what changed in this version.',
   })
   @IsOptional()
   @IsString()
@@ -40,12 +39,4 @@ export class CreateDocumentSubmissionDto {
   @IsOptional()
   @IsString()
   content_markdown?: string;
-
-  @ApiPropertyOptional({
-    example: 'f47ac10b-58cc-4372-a567-0e02b2c3d479',
-    description: 'Previous submission id this version was based on',
-  })
-  @IsOptional()
-  @IsUUID()
-  base_submission_id?: string;
 }

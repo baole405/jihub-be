@@ -11,6 +11,8 @@ import {
   GroupReview,
   ImportBatch,
   ImportRowLog,
+  ReviewSession,
+  ReviewSessionAuditLog,
   Semester,
   SemesterWeekAuditLog,
   Task,
@@ -19,9 +21,9 @@ import {
 } from '../../entities';
 import { ClassModule } from '../class/class.module';
 import { GithubModule } from '../github/github.module';
-import { SemesterController } from './semester.controller';
 import { SemesterGovernanceController } from './semester-governance.controller';
 import { SemesterPublicController } from './semester-public.controller';
+import { SemesterController } from './semester.controller';
 import { SemesterService } from './semester.service';
 
 @Module({
@@ -41,6 +43,8 @@ import { SemesterService } from './semester.service';
       GroupMembership,
       GroupRepository,
       GroupReview,
+      ReviewSession,
+      ReviewSessionAuditLog,
       SemesterWeekAuditLog,
       Task,
       User,

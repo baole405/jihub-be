@@ -80,6 +80,8 @@ export const ERROR_MESSAGES = {
     PUBLISHED_GRADES_LOCKED:
       'Cannot change deadline week — grades have already been published for this checkpoint.',
     NO_ACTIVE_SEMESTER: 'No active semester found.',
+    UPCOMING_INTERACTION_FORBIDDEN:
+      'This action is not available for UPCOMING semesters.',
   },
   EVALUATIONS: {
     NOT_FOUND: 'Evaluation not found',

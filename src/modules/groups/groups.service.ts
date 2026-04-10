@@ -8,6 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, DataSource, In, IsNull, Repository } from 'typeorm';
 import { ERROR_MESSAGES } from '../../common/constants';
+import { SemesterStatus } from '../../common/enums/semester-status.enum';
 import {
   Class,
   ClassMembership,
@@ -19,6 +20,7 @@ import {
   IntegrationToken,
   MembershipRole,
   Role,
+  Semester,
   Topic,
   User,
 } from '../../entities';
@@ -73,6 +75,8 @@ export class GroupsService {
     if (userRole === Role.LECTURER && targetClass.lecturer_id !== userId) {
       throw new ForbiddenException(ERROR_MESSAGES.GROUPS.NOT_CLASS_LECTURER);
     }
+
+    await this.assertSemesterAllowsInteraction(targetClass.id, userRole);
 
     const duplicateName = await this.groupRepository
       .createQueryBuilder('group')
@@ -216,7 +220,7 @@ export class GroupsService {
       }
     }
 
-    return this.formatGroupDetail(group);
+    return await this.formatGroupDetail(group);
   }
 
   async getGroupsByClass(classId: string, userId: string, userRole: Role) {
@@ -263,6 +267,8 @@ export class GroupsService {
     });
     if (!group || !group.class_id)
       throw new NotFoundException('Group or class not found');
+
+    await this.assertSemesterAllowsInteraction(group.class_id, Role.STUDENT);
 
     const myOtherGroupsInClass = await this.membershipRepository
       .createQueryBuilder('m')
@@ -416,6 +422,7 @@ export class GroupsService {
   ) {
     const group = await this.assertGroupExists(groupId);
     await this.assertCanManageGroup(groupId, userId, userRole);
+    await this.assertSemesterAllowsInteraction(group.class_id, userRole);
 
     let newGithubUrl = dto.github_repo_url;
     let newJiraKey = dto.jira_project_key;
@@ -529,7 +536,7 @@ export class GroupsService {
     }
 
     const updatedGroup = await this.findOneById(groupId);
-    return this.formatGroupDetail(updatedGroup);
+    return await this.formatGroupDetail(updatedGroup);
   }
 
   async remove(groupId: string, userId: string, userRole: Role) {
@@ -542,6 +549,8 @@ export class GroupsService {
       if (!targetClass || targetClass.lecturer_id !== userId) {
         throw new ForbiddenException(ERROR_MESSAGES.GROUPS.NOT_CLASS_LECTURER);
       }
+
+      await this.assertSemesterAllowsInteraction(group.class_id, userRole);
     } else if (userRole !== Role.ADMIN) {
       throw new ForbiddenException(
         ERROR_MESSAGES.GROUPS.ONLY_LEADERS_CAN_MANAGE,
@@ -579,7 +588,8 @@ export class GroupsService {
     requesterId: string,
     requesterRole: Role,
   ) {
-    await this.assertGroupExists(groupId);
+    const group = await this.assertGroupExists(groupId);
+    await this.assertSemesterAllowsInteraction(group.class_id, requesterRole);
     await this.assertCanManageGroup(groupId, requesterId, requesterRole);
 
     const user = await this.userRepository.findOne({
@@ -625,7 +635,8 @@ export class GroupsService {
     requesterId: string,
     requesterRole: Role,
   ) {
-    await this.assertGroupExists(groupId);
+    const group = await this.assertGroupExists(groupId);
+    await this.assertSemesterAllowsInteraction(group.class_id, requesterRole);
     await this.assertCanManageGroup(groupId, requesterId, requesterRole);
 
     const membership = await this.membershipRepository.findOne({
@@ -690,7 +701,8 @@ export class GroupsService {
     requesterId: string,
     requesterRole: Role,
   ) {
-    await this.assertGroupExists(groupId);
+    const group = await this.assertGroupExists(groupId);
+    await this.assertSemesterAllowsInteraction(group.class_id, requesterRole);
     await this.assertCanManageGroup(groupId, requesterId, requesterRole);
 
     const membership = await this.membershipRepository.findOne({
@@ -723,7 +735,8 @@ export class GroupsService {
   }
 
   async leaveGroup(groupId: string, userId: string) {
-    await this.assertGroupExists(groupId);
+    const group = await this.assertGroupExists(groupId);
+    await this.assertSemesterAllowsInteraction(group.class_id, Role.STUDENT);
 
     const membership = await this.membershipRepository.findOne({
       where: { group_id: groupId, user_id: userId },
@@ -763,6 +776,11 @@ export class GroupsService {
     requesterRole: Role,
   ) {
     const sourceGroup = await this.assertGroupExists(sourceGroupId);
+
+    await this.assertSemesterAllowsInteraction(
+      sourceGroup.class_id,
+      requesterRole,
+    );
 
     if (!sourceGroup.class_id) {
       throw new BadRequestException(
@@ -989,6 +1007,7 @@ export class GroupsService {
       .leftJoinAndSelect('group.members', 'member', 'member.left_at IS NULL')
       .leftJoinAndSelect('member.user', 'user')
       .leftJoinAndSelect('group.topic', 'topic')
+      .leftJoinAndSelect('group.class', 'class')
       .where('group.id = :id', { id: groupId })
       .orderBy('member.joined_at', 'ASC')
       .getOne();
@@ -1000,14 +1019,16 @@ export class GroupsService {
     return group;
   }
 
-  private formatGroupDetail(group: Group) {
+  private async formatGroupDetail(group: Group) {
     const members = group.members || [];
+    const semesterStatus = await this.getSemesterStatusByCode(group.semester);
     return {
       id: group.id,
       name: group.name,
       project_name: group.project_name,
       description: group.description,
       semester: group.semester,
+      semester_status: semesterStatus,
       status: group.status,
       github_repo_url: group.github_repo_url,
       jira_project_key: group.jira_project_key,
@@ -1025,6 +1046,72 @@ export class GroupsService {
         joined_at: m.joined_at,
       })),
     };
+  }
+
+  private async getSemesterStatusByCode(
+    semesterCode: string | null | undefined,
+  ): Promise<SemesterStatus | null> {
+    if (!semesterCode) {
+      return null;
+    }
+
+    const manager = this.groupRepository.manager as
+      | {
+          getRepository?: typeof this.groupRepository.manager.getRepository;
+        }
+      | undefined;
+
+    if (!manager?.getRepository) {
+      return null;
+    }
+
+    const semester = await manager.getRepository(Semester).findOne({
+      where: { code: semesterCode },
+    });
+
+    return semester?.status ?? null;
+  }
+
+  private async assertSemesterAllowsInteraction(
+    classId: string,
+    userRole: Role,
+  ) {
+    if (userRole === Role.ADMIN) {
+      return;
+    }
+
+    const classRepo = this.classRepository as
+      | {
+          findOne?: typeof this.classRepository.findOne;
+        }
+      | undefined;
+
+    if (!classRepo?.findOne) {
+      return;
+    }
+
+    const targetClass = await classRepo.findOne({
+      where: { id: classId },
+      select: {
+        id: true,
+        lecturer_id: true,
+        semester: true,
+      },
+    });
+
+    if (!targetClass) {
+      return;
+    }
+
+    const semesterStatus = await this.getSemesterStatusByCode(
+      targetClass.semester,
+    );
+
+    if (semesterStatus === SemesterStatus.UPCOMING) {
+      throw new ForbiddenException(
+        ERROR_MESSAGES.CHECKPOINTS.UPCOMING_INTERACTION_FORBIDDEN,
+      );
+    }
   }
 
   private async assertGroupExists(groupId: string) {
@@ -1094,6 +1181,7 @@ export class GroupsService {
       throw new NotFoundException('Group not found');
     }
 
+    await this.assertSemesterAllowsInteraction(group.class_id, userRole);
     await this.assertCanManageGroup(groupId, userId, userRole);
 
     // Check if repo already linked
@@ -1129,6 +1217,14 @@ export class GroupsService {
     userId: string,
     userRole: Role,
   ) {
+    const group = await this.groupRepository.findOne({
+      where: { id: groupId },
+    });
+    if (!group) {
+      throw new NotFoundException('Group not found');
+    }
+
+    await this.assertSemesterAllowsInteraction(group.class_id, userRole);
     await this.assertCanManageGroup(groupId, userId, userRole);
 
     const repo = await this.groupRepoRepository.findOne({
@@ -1143,6 +1239,7 @@ export class GroupsService {
 
   async getIntegrationStatus(groupId: string, userId: string, userRole: Role) {
     const group = await this.findOne(groupId, userId, userRole);
+    const semesterStatus = await this.getSemesterStatusByCode(group.semester);
     const [githubToken, jiraToken, repos] = await Promise.all([
       this.integrationTokenRepository.findOne({
         where: { user_id: userId, provider: IntegrationProvider.GITHUB },
@@ -1174,6 +1271,10 @@ export class GroupsService {
       );
     }
 
+    if (semesterStatus === SemesterStatus.UPCOMING) {
+      warnings.push(ERROR_MESSAGES.CHECKPOINTS.UPCOMING_INTERACTION_FORBIDDEN);
+    }
+
     return {
       user: {
         github: {
@@ -1200,9 +1301,14 @@ export class GroupsService {
           isPrimary: repo.is_primary,
         })),
         reports: {
-          canGenerateSrs: !!group.jira_project_key,
-          canGenerateAssignments: !!group.jira_project_key,
-          canGenerateCommits: repos.length > 0,
+          canGenerateSrs:
+            !!group.jira_project_key &&
+            semesterStatus !== SemesterStatus.UPCOMING,
+          canGenerateAssignments:
+            !!group.jira_project_key &&
+            semesterStatus !== SemesterStatus.UPCOMING,
+          canGenerateCommits:
+            repos.length > 0 && semesterStatus !== SemesterStatus.UPCOMING,
         },
       },
       warnings,

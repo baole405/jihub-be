@@ -1,10 +1,17 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import {
   AuthProvider,
   ReviewMilestoneCode,
+  ReviewProblemStatus,
+  ReviewScoringFormula,
+  ReviewSessionStatus,
   Role,
   SemesterStatus,
 } from '../../common/enums';
@@ -19,6 +26,8 @@ import {
   GroupReview,
   ImportBatch,
   ImportRowLog,
+  ReviewSession,
+  ReviewSessionAuditLog,
   Semester,
   SemesterWeekAuditLog,
   Task,
@@ -55,6 +64,8 @@ describe('SemesterService', () => {
   let groupMembershipRepo: ReturnType<typeof createMockRepository>;
   let groupRepoLinkRepo: ReturnType<typeof createMockRepository>;
   let groupReviewRepo: ReturnType<typeof createMockRepository>;
+  let reviewSessionRepo: ReturnType<typeof createMockRepository>;
+  let reviewSessionAuditLogRepo: ReturnType<typeof createMockRepository>;
   let taskRepo: ReturnType<typeof createMockRepository>;
   let weekAuditRepo: ReturnType<typeof createMockRepository>;
   let classCheckpointRepo: ReturnType<typeof createMockRepository>;
@@ -75,6 +86,8 @@ describe('SemesterService', () => {
     groupMembershipRepo = createMockRepository();
     groupRepoLinkRepo = createMockRepository();
     groupReviewRepo = createMockRepository();
+    reviewSessionRepo = createMockRepository();
+    reviewSessionAuditLogRepo = createMockRepository();
     taskRepo = createMockRepository();
     weekAuditRepo = createMockRepository();
     classCheckpointRepo = createMockRepository();
@@ -144,6 +157,12 @@ describe('SemesterService', () => {
       id: entity.id ?? 'review-1',
       ...entity,
     }));
+    reviewSessionAuditLogRepo.save.mockImplementation(async (entity) => ({
+      id: entity.id ?? 'review-audit-1',
+      ...entity,
+    }));
+    reviewSessionRepo.find.mockResolvedValue([]);
+    groupMembershipRepo.find.mockResolvedValue([]);
     configService.get.mockImplementation((key: string) => {
       switch (key) {
         case 'DEMO_WEEK_OVERRIDE_ENABLED':
@@ -187,6 +206,14 @@ describe('SemesterService', () => {
         {
           provide: getRepositoryToken(GroupReview),
           useValue: groupReviewRepo,
+        },
+        {
+          provide: getRepositoryToken(ReviewSession),
+          useValue: reviewSessionRepo,
+        },
+        {
+          provide: getRepositoryToken(ReviewSessionAuditLog),
+          useValue: reviewSessionAuditLogRepo,
         },
         { provide: getRepositoryToken(Task), useValue: taskRepo },
         {
@@ -679,7 +706,7 @@ describe('SemesterService', () => {
     expect(result.semester?.current_week).toBe(7);
     expect(result.milestone).toEqual({
       code: ReviewMilestoneCode.REVIEW_2,
-      label: 'Checkpoint 2',
+      label: 'Review 2',
       week_start: 4,
       week_end: 8,
     });
@@ -768,7 +795,12 @@ describe('SemesterService', () => {
       }),
     );
     expect(result.group.review_status).toBe('REVIEWED');
-    expect(result.group.scores.total_score).toBe(8);
+    expect(result.group.scores.task_progress_score).toBe(8);
+    expect(result.group.scores.commit_contribution_score).toBe(7);
+    expect(result.group.scores.review_milestone_score).toBe(9);
+    expect(result.group.scores.auto_score).toBeCloseTo(5.67, 2);
+    expect(result.group.scores.final_score).toBeCloseTo(5.67, 2);
+    expect(result.group.scores.total_score).toBeCloseTo(5.67, 2);
     expect(result.group.snapshot.repository).toBe('org/repo');
   });
 
@@ -823,10 +855,12 @@ describe('SemesterService', () => {
       },
     );
 
-    expect(result.group.scores.task_progress_score).toBeCloseTo(6.67, 2);
+    expect(result.group.scores.task_progress_score).toBe(10);
     expect(result.group.scores.commit_contribution_score).toBe(3.65);
-    expect(result.group.scores.review_milestone_score).toBeCloseTo(5.16, 2);
-    expect(result.group.scores.total_score).toBeCloseTo(5.16, 2);
+    expect(result.group.scores.review_milestone_score).toBe(10);
+    expect(result.group.scores.auto_score).toBeCloseTo(4.55, 2);
+    expect(result.group.scores.final_score).toBeCloseTo(4.55, 2);
+    expect(result.group.scores.total_score).toBeCloseTo(4.55, 2);
   });
 
   it('returns lecturer review summary with missing evidence warnings', async () => {
@@ -942,6 +976,393 @@ describe('SemesterService', () => {
       review_status: 'REVIEWED',
     });
     expect(result.groups[0].warnings).toHaveLength(0);
+  });
+
+  it('creates one review session per group per day and blocks duplicates', async () => {
+    semesterRepo.findOne.mockResolvedValue({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 4,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+    groupRepo.findOne.mockResolvedValue({
+      id: 'group-1',
+      class_id: 'class-1',
+      name: 'Group 1',
+      class: {
+        id: 'class-1',
+        code: 'SWP391',
+        name: 'Software Project',
+        semester: 'SP26',
+        lecturer_id: 'lecturer-1',
+      },
+    });
+    reviewSessionRepo.findOne.mockResolvedValue(null);
+    reviewSessionRepo.save.mockImplementation(async (entity) => ({
+      id: 'session-1',
+      ...entity,
+    }));
+
+    const created = await service.createReviewSession(
+      'group-1',
+      'lecturer-1',
+      Role.LECTURER,
+      {
+        milestone_code: ReviewMilestoneCode.REVIEW_1,
+        review_date: '2026-03-12T09:00:00.000Z',
+        title: 'Review 1 prep',
+        current_problems: [],
+      },
+    );
+
+    expect(created.review_day).toBe('2026-03-12');
+    expect(created.status).toBe(ReviewSessionStatus.SCHEDULED);
+    expect(reviewSessionAuditLogRepo.save).toHaveBeenCalled();
+
+    reviewSessionRepo.findOne.mockResolvedValueOnce({
+      id: 'session-existing',
+      group_id: 'group-1',
+      review_day: '2026-03-12',
+      deleted_at: null,
+    });
+
+    await expect(
+      service.createReviewSession('group-1', 'lecturer-1', Role.LECTURER, {
+        milestone_code: ReviewMilestoneCode.REVIEW_1,
+        review_date: '2026-03-12T15:00:00.000Z',
+        title: 'Duplicate same-day review',
+        current_problems: [],
+      }),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it('auto-carries not-done problems from the previous review session', async () => {
+    semesterRepo.findOne.mockResolvedValue({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 4,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+    groupRepo.findOne.mockResolvedValue({
+      id: 'group-1',
+      class_id: 'class-1',
+      name: 'Group 1',
+      class: {
+        id: 'class-1',
+        code: 'SWP391',
+        name: 'Software Project',
+        semester: 'SP26',
+        lecturer_id: 'lecturer-1',
+      },
+    });
+    groupMembershipRepo.find.mockResolvedValue([
+      {
+        group_id: 'group-1',
+        user_id: 'student-1',
+        left_at: null,
+        user: { id: 'student-1', full_name: 'Nguyen Van A', email: 'a@fpt.edu.vn' },
+      },
+      {
+        group_id: 'group-1',
+        user_id: 'student-2',
+        left_at: null,
+        user: { id: 'student-2', full_name: 'Tran Thi B', email: 'b@fpt.edu.vn' },
+      },
+    ]);
+    reviewSessionRepo.find.mockResolvedValue([
+      {
+        id: 'session-prev',
+        semester_id: 'semester-1',
+        group_id: 'group-1',
+        review_date: new Date('2026-03-10T09:00:00.000Z'),
+        current_problems: [
+          {
+            id: 'problem-1',
+            title: 'Jira permissions still blocked',
+            status: ReviewProblemStatus.NOT_DONE,
+            note: 'Need admin scope fix',
+          },
+          {
+            id: 'problem-2',
+            title: 'Old resolved blocker',
+            status: ReviewProblemStatus.DONE,
+            note: 'Already resolved',
+          },
+        ],
+      },
+    ]);
+    reviewSessionRepo.findOne.mockResolvedValue(null);
+    reviewSessionRepo.save.mockImplementation(async (entity) => ({
+      id: 'session-new',
+      ...entity,
+    }));
+
+    const created = await service.createReviewSession(
+      'group-1',
+      'lecturer-1',
+      Role.LECTURER,
+      {
+        milestone_code: ReviewMilestoneCode.REVIEW_1,
+        review_date: '2026-03-12T09:00:00.000Z',
+        title: 'Follow-up review',
+        current_problems: [
+          {
+            title: 'Need deployment rehearsal',
+            status: ReviewProblemStatus.NOT_DONE,
+            note: 'Schedule before demo',
+          },
+        ],
+        attendance_records: [
+          { user_id: 'student-1', present: true },
+          { user_id: 'student-2', present: false },
+        ],
+      },
+    );
+
+    expect(created.previous_session_id).toBe('session-prev');
+    expect(created.current_problems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: 'Jira permissions still blocked' }),
+        expect.objectContaining({ title: 'Need deployment rehearsal' }),
+      ]),
+    );
+    expect(created.current_problems).toHaveLength(2);
+    expect(created.attendance_ratio).toBe(0.5);
+    expect(created.attendance_records).toHaveLength(2);
+  });
+
+  it('uses per-student attendance records in checkpoint scoring metrics', async () => {
+    semesterRepo.findOne.mockResolvedValueOnce({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 7,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+    groupRepo.findOne.mockResolvedValue({
+      id: 'group-1',
+      class_id: 'class-1',
+      name: 'Group 1',
+      project_name: 'Project One',
+      topic: null,
+      class: {
+        id: 'class-1',
+        lecturer_id: 'lecturer-1',
+        code: 'SWP391',
+        name: 'Software Project',
+        semester: 'SP26',
+      },
+    });
+    taskRepo.find.mockResolvedValue([
+      { id: 'task-1', status: 'DONE', due_at: null },
+      { id: 'task-2', status: 'TODO', due_at: null },
+    ]);
+    groupRepoLinkRepo.findOne
+      .mockResolvedValueOnce({
+        group_id: 'group-1',
+        repo_owner: 'org',
+        repo_name: 'repo',
+        added_by_id: 'leader-1',
+      })
+      .mockResolvedValueOnce(null);
+    githubService.getRepoCommits.mockResolvedValue([
+      { author: 'alice' },
+      { author: 'bob' },
+    ]);
+    reviewSessionRepo.find.mockResolvedValue([
+      {
+        id: 'session-1',
+        group_id: 'group-1',
+        review_date: new Date('2026-03-20T09:00:00.000Z'),
+        review_day: '2026-03-20',
+        milestone_code: ReviewMilestoneCode.REVIEW_2,
+        status: ReviewSessionStatus.COMPLETED,
+        title: 'Attendance check',
+        lecturer_note: null,
+        what_done_since_last_review: null,
+        next_plan_until_next_review: null,
+        previous_problem_followup: null,
+        current_problems: [],
+        attendance_ratio: null,
+        attendance_records: [
+          { user_id: 'student-1', user_name: 'A', present: true },
+          { user_id: 'student-2', user_name: 'B', present: true },
+          { user_id: 'student-3', user_name: 'C', present: false },
+        ],
+        previous_session_id: null,
+      },
+    ]);
+    groupReviewRepo.findOne.mockResolvedValue(null);
+
+    const result = await service.upsertCurrentGroupReview(
+      'group-1',
+      'lecturer-1',
+      Role.LECTURER,
+      {
+        scoring_formula: ReviewScoringFormula.ATTENDANCE_ONLY,
+      },
+    );
+
+    expect(result.group.scoring?.metrics.attendance_ratio).toBeCloseTo(0.67, 2);
+    expect(result.group.scores.auto_score).toBeCloseTo(6.7, 1);
+  });
+
+  it('rejects not-done problems without note and requires override reason for final score override', async () => {
+    semesterRepo.findOne.mockResolvedValue({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 7,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+    groupRepo.findOne.mockResolvedValue({
+      id: 'group-1',
+      class_id: 'class-1',
+      name: 'Group 1',
+      project_name: 'Project One',
+      topic: null,
+      class: {
+        id: 'class-1',
+        code: 'SWP391',
+        name: 'Software Project',
+        semester: 'SP26',
+        lecturer_id: 'lecturer-1',
+      },
+    });
+    reviewSessionRepo.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.createReviewSession('group-1', 'lecturer-1', Role.LECTURER, {
+        milestone_code: ReviewMilestoneCode.REVIEW_2,
+        review_date: '2026-03-20T09:00:00.000Z',
+        title: 'Review with open problem',
+        current_problems: [
+          {
+            title: 'CI still failing',
+            status: ReviewProblemStatus.NOT_DONE,
+          },
+        ],
+      }),
+    ).rejects.toThrow(BadRequestException);
+
+    taskRepo.find.mockResolvedValue([
+      { id: 'task-1', status: 'DONE', due_at: null },
+      { id: 'task-2', status: 'TODO', due_at: null },
+    ]);
+    groupRepoLinkRepo.findOne
+      .mockResolvedValueOnce({
+        group_id: 'group-1',
+        repo_owner: 'org',
+        repo_name: 'repo',
+        added_by_id: 'leader-1',
+      })
+      .mockResolvedValueOnce(null);
+    githubService.getRepoCommits.mockResolvedValue([
+      { author: 'alice' },
+      { author: 'bob' },
+    ]);
+    reviewSessionRepo.find.mockResolvedValue([
+      {
+        id: 'session-1',
+        group_id: 'group-1',
+        current_problems: [
+          {
+            id: 'problem-1',
+            title: 'CI still failing',
+            status: ReviewProblemStatus.DONE,
+            note: 'Resolved yesterday',
+          },
+        ],
+        attendance_ratio: 0.8,
+      },
+    ]);
+    groupReviewRepo.findOne.mockResolvedValue(null);
+
+    await expect(
+      service.upsertCurrentGroupReview(
+        'group-1',
+        'lecturer-1',
+        Role.LECTURER,
+        {
+          scoring_formula: ReviewScoringFormula.ATTENDANCE_ONLY,
+          final_score: 9.5,
+        },
+      ),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('allows students to read review sessions but not modify them', async () => {
+    semesterRepo.findOne.mockResolvedValue({
+      id: 'semester-1',
+      code: 'SP26',
+      name: 'Spring 2026',
+      status: SemesterStatus.ACTIVE,
+      current_week: 5,
+      start_date: '2026-01-01',
+      end_date: '2026-05-01',
+    });
+    groupRepo.findOne.mockResolvedValue({
+      id: 'group-1',
+      class_id: 'class-1',
+      name: 'Group 1',
+      class: {
+        id: 'class-1',
+        code: 'SWP391',
+        name: 'Software Project',
+        semester: 'SP26',
+        lecturer_id: 'lecturer-1',
+      },
+      topic: null,
+    });
+    groupMembershipRepo.findOne.mockResolvedValue({
+      id: 'membership-1',
+      user_id: 'student-1',
+      group_id: 'group-1',
+      left_at: null,
+    });
+    reviewSessionRepo.find.mockResolvedValue([
+      {
+        id: 'session-1',
+        group_id: 'group-1',
+        review_day: '2026-03-25',
+        review_date: new Date('2026-03-25T09:00:00.000Z'),
+        milestone_code: ReviewMilestoneCode.REVIEW_2,
+        status: ReviewSessionStatus.COMPLETED,
+        title: 'Review 2 checkpoint prep',
+        lecturer_note: 'Need tighter delivery on backlog cleanup',
+        what_done_since_last_review: 'Closed task sync bugs',
+        next_plan_until_next_review: 'Prepare checkpoint demo',
+        previous_problem_followup: 'Resolved CI outage',
+        attendance_ratio: 0.9,
+        current_problems: [],
+      },
+    ]);
+
+    const readResult = await service.listGroupReviewSessions(
+      'group-1',
+      'student-1',
+      Role.STUDENT,
+    );
+
+    expect(readResult.sessions).toHaveLength(1);
+
+    await expect(
+      service.createReviewSession('group-1', 'student-1', Role.STUDENT, {
+        milestone_code: ReviewMilestoneCode.REVIEW_2,
+        review_date: '2026-03-26T09:00:00.000Z',
+        title: 'Student should not create this',
+      }),
+    ).rejects.toThrow(ForbiddenException);
   });
 
   it('blocks imports into closed semesters', async () => {
